@@ -1,7 +1,7 @@
 import { ApiError, assertOrigin, readJson, formatAmount } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
-import { inspectAccount, verifyAccount, accountFromProfile } from './provider.js';
+import { inspectAccount, verifyAccount, accountFromProfile, queryPayment } from './provider.js';
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus, verifyAccountInBrowser } from './browser-login.js';
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
@@ -47,9 +47,19 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
-  if (path === '/api/admin/account/test-payment') {
+  if (path === '/api/admin/account/test-payment' || path === '/api/admin/account/check-payment') {
+    const checking = path.endsWith('/check-payment');
     if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '付款码测试方式无效。');
     try {
+      if (checking) {
+        if (!body.providerOrderId) throw new ApiError(400, 'INVALID_ORDER_ID', '请输入 DeepSeek 订单号。');
+        const credentials = await credentialsFor(env, true);
+        const fetcher = browserPaymentFetcher(env, credentials, undefined, body.providerOrderId);
+        // Diagnostic only: capture is the official page's status polling API.
+        // Never create or import a ledger record from caller-supplied fields.
+        const result = await queryPayment(env, { provider_order_id: body.providerOrderId, amount_fen: 100, created_at: now, paid_at: null }, fetcher);
+        return json({ ...result, providerOrderId: body.providerOrderId });
+      }
       const fetcher = body.transport === 'browser' ? browserPaymentFetcher(env, await credentialsFor(env)) : fetch;
       return json(await createAdminTestPayment(env, identity, body, fetcher));
     }
@@ -58,7 +68,7 @@ export async function handleAdmin(request, env) {
       const diagnostic = { stage: 'payment', code: error.code };
       for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error[key])) diagnostic[key] = error[key];
       if (['captcha', 'challenge'].includes(error.upstreamChallenge)) diagnostic.upstreamChallenge = error.upstreamChallenge;
-      await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`payment_test_failed:${JSON.stringify(diagnostic)}`, identity.email, Date.now()).run().catch(() => {});
+      await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`${checking ? 'payment_check_failed' : 'payment_test_failed'}:${JSON.stringify(diagnostic)}`, identity.email, Date.now()).run().catch(() => {});
       return json({ error: { code: error.code, message: error.message, diagnostic } }, error.status);
     }
   }

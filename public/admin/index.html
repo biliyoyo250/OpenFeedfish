@@ -42,6 +42,7 @@
         <label class="field-help browser-mode"><input id="browser-payment-mode" type="checkbox"> 使用 Cloudflare 浏览器取码</label>
         <div class="action-group"><button class="button" type="button" data-test-method="wechat" disabled>微信测试码</button><button class="button" type="button" data-test-method="alipay" disabled>支付宝测试码</button></div>
         <div id="payment-test-result" hidden><p id="payment-test-description" class="field-help"></p><img id="payment-test-qr" class="payment-test-qr" alt="1 CNY 测试账单付款码"><a id="payment-test-link" class="official-link" target="_blank" rel="noopener noreferrer" hidden>打开支付页 ↗</a></div>
+        <details class="device-details"><summary>核对官网 1 CNY 测试订单</summary><p class="field-help">通过 Cloudflare 浏览器查询已有订单，不创建账单。</p><label for="provider-check-id">DeepSeek 订单号</label><input id="provider-check-id" type="text" maxlength="200" autocomplete="off" spellcheck="false"><button id="provider-check-button" class="button" type="button" disabled>查询官网订单状态</button></details>
       </details>
     </section>
 

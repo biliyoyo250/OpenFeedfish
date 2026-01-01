@@ -6,6 +6,7 @@ const form = element('session-form');
 const refreshButton = element('refresh-button');
 const checkButton = element('check-button');
 const browserCheckButton = element('browser-check-button');
+const providerCheckButton = element('provider-check-button');
 const disableButton = element('disable-button');
 const importButton = element('import-button');
 const loginStart = element('login-start');
@@ -74,6 +75,8 @@ function updateControls() {
   checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
   checkButton.textContent = pending ? '重试账户核验' : '验证连接';
   browserCheckButton.disabled = !writable || Boolean(pending) || !session?.account?.configured;
+  providerCheckButton.disabled = !writable || Boolean(pending) || !(session?.account?.configured || session?.account?.status === 'disabled');
+  element('provider-check-id').disabled = providerCheckButton.disabled;
   element('browser-payment-mode').disabled = !writable || Boolean(pending) || !session?.account?.configured;
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
   for (const button of testButtons) button.disabled = !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
@@ -297,6 +300,19 @@ checkButton.addEventListener('click', () => {
 });
 browserCheckButton.addEventListener('click', () => {
   if (!browserCheckButton.disabled) void mutate('/api/admin/account/check', { transport: 'browser' }, 'Cloudflare 云浏览器已核验固定账户，未创建付款账单。');
+});
+providerCheckButton.addEventListener('click', async () => {
+  if (providerCheckButton.disabled || busy) return;
+  const providerOrderId = element('provider-check-id').value.trim();
+  if (!/^[A-Za-z0-9_-]{6,200}$/.test(providerOrderId)) { setNotice('请输入有效的 DeepSeek 订单号。', true); return; }
+  busy = true; updateControls(); setNotice('正在查询已有官网订单…');
+  try {
+    const result = await request('/api/admin/account/check-payment', { providerOrderId, transport: 'browser' });
+    setNotice(`官网订单状态：${result.providerStatus}。未创建新账单。`);
+  } catch (error) {
+    const status = Number.isInteger(error.diagnostic?.upstreamStatus) ? `（HTTP ${error.diagnostic.upstreamStatus}）` : '';
+    setNotice(`官网订单查询未完成。${error.message}${status}${error.diagnostic?.upstreamChallenge ? ' 上游要求浏览器验证。' : ''}`, true);
+  } finally { busy = false; updateControls(); }
 });
 
 for (const button of testButtons) button.addEventListener('click', async () => {

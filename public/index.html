@@ -69,7 +69,16 @@
       <h2 id="payment-title">扫码付款</h2>
       <p class="payment-amount"><span id="order-amount"></span><small>CNY</small></p>
       <img id="success-animation" class="success-animation" width="160" height="160" alt="" hidden>
-      <div class="qr-frame" id="qr-frame"><img id="qr-image" width="210" height="210" alt="付款二维码" hidden><div id="qr-overlay" hidden><span id="result-icon">✓</span></div></div>
+      <div class="qr-frame" id="qr-frame">
+        <img id="qr-image" width="210" height="210" alt="付款二维码" hidden>
+        <div id="qr-overlay" hidden>
+          <span id="result-icon">✓</span>
+          <div id="payment-unavailable" class="payment-unavailable" hidden>
+            <img id="payment-unavailable-image" width="192" height="155" alt="" draggable="false">
+            <p id="payment-unavailable-caption" hidden></p>
+          </div>
+        </div>
+      </div>
       <p class="payment-instruction"><span id="payment-instruction"></span> <a id="qr-download" class="qr-download" download="feedfish-qr.png" hidden>保存二维码</a></p>
       <p class="timer" id="countdown"></p>
       <p id="poll-error" class="error" role="status" hidden></p>
@@ -85,7 +94,7 @@
     </section>
   </main>
   <dialog id="nickname-dialog" class="nickname-dialog" aria-labelledby="nickname-dialog-title">
-    <img src="/assets/logo.png" width="104" height="104" alt="" draggable="false">
+    <img src="/assets/nickname-prompt.jpg" width="104" height="104" alt="" draggable="false">
     <h2 id="nickname-dialog-title">真的不留名吗？</h2>
     <div class="nickname-dialog-actions">
       <button id="nickname-skip" class="text-button" type="button">不必了</button>

@@ -103,6 +103,9 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 #qr-image { display: block; max-width: 100%; width: 210px; height: auto; }
 #qr-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: var(--surface); color: var(--primary); }
 #result-icon { font-size: 48px; font-weight: 400; }
+.payment-unavailable { display: grid; justify-items: center; width: 100%; padding: 12px; gap: 8px; color: var(--on-surface); }
+.payment-unavailable img { display: block; width: min(100%, 192px); height: auto; }
+.payment-unavailable p { margin: 0; font-size: 14px; line-height: 1.5; font-weight: 700; }
 .success-animation { display: block; width: 160px; height: 160px; object-fit: contain; margin: 20px auto; }
 .payment-instruction { font-size: 13px; line-height: 1.8; color: var(--on-surface-variant); margin: 20px 0 4px; overflow-wrap: anywhere; }
 .qr-download { margin-inline-start: .5em; color: var(--primary); text-underline-offset: .18em; }
@@ -122,6 +125,7 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 .nickname-dialog { width: min(328px, calc(100% - 40px)); max-height: calc(100dvh - 40px); padding: 24px; border: 0; border-radius: 28px; background: var(--surface-container); color: var(--on-surface); text-align: center; box-shadow: 0 12px 40px #0003; }
 .nickname-dialog::backdrop { background: #0007; }
 .nickname-dialog>img { display: block; width: 104px; height: 104px; object-fit: contain; margin: 0 auto; }
+#nickname-dialog>img { border-radius: 16px; }
 .nickname-dialog h2 { margin: 16px 0 24px; }
 .nickname-dialog-actions { display: flex; gap: 12px; }
 .nickname-dialog-actions>button { flex: 1; }

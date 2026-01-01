@@ -7,6 +7,8 @@ const storageKey = 'feedfish-order-v1';
 let config, order, timer, countdown, turnstileId, token = '', requestKey, requestFingerprint, polling = false;
 let backoff = 4000;
 let celebratedOrder;
+let submitting = false;
+const nicknameDialog = $('nickname-dialog');
 initFish();
 const storage = { get() { try { return JSON.parse(sessionStorage.getItem(storageKey)); } catch { return null; } }, set(value) { try { value ? sessionStorage.setItem(storageKey, JSON.stringify(value)) : sessionStorage.removeItem(storageKey); } catch {} } };
 function message(id, text = '') { $(id).textContent = text; $(id).hidden = !text; }
@@ -85,21 +87,39 @@ async function poll(force = false) {
   }
 }
 $('message').addEventListener('input', () => { $('message-count').textContent = `${$('message').value.length} / 300`; });
+$('nickname-skip').addEventListener('click', () => nicknameDialog.close('continue'));
+$('nickname-edit').addEventListener('click', () => {
+  nicknameDialog.close('edit');
+  form.querySelector('.optional-fields').open = true;
+  $('nickname').focus();
+});
+function confirmAnonymous() {
+  nicknameDialog.returnValue = '';
+  return new Promise((resolve) => {
+    nicknameDialog.addEventListener('close', () => resolve(nicknameDialog.returnValue === 'continue'), { once: true });
+    nicknameDialog.showModal();
+  });
+}
 form.addEventListener('submit', async (event) => {
   event.preventDefault(); message('form-error');
-  if (!config?.paymentsAvailable) { message('form-error', '收款暂时不可用，请稍后重试。'); return; }
-  const amount = $('amount').value.trim();
-  if (!/^(?:0|[1-9]\d{0,5})(?:\.0{1,2})?$/.test(amount) || Number(amount) < Number(config.minAmount) || Number(amount) > Number(config.maxAmount)) { message('form-error', `请输入 ${config.minAmount}–${config.maxAmount} CNY，仅支持整数元。`); $('amount').focus(); return; }
-  if (config.turnstileSiteKey && !token) { message('form-error', '请先完成人机验证。'); return; }
-  const body = { amount, nickname: $('nickname').value.trim(), message: $('message').value.trim(), paymentMethod: new FormData(form).get('paymentMethod') };
-  const fingerprint = JSON.stringify(body);
-  if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
-  busy(true);
+  if (submitting) return;
+  submitting = true;
   try {
-    order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 });
-    storage.set(order); await renderOrder(); timer = setTimeout(poll, 4000);
-  } catch (error) { message('form-error', error.name === 'TimeoutError' ? '请求暂未返回。请点击重试，同一笔请求不会重复创建订单。' : error.message); }
-  finally { busy(false); resetCaptcha(); }
+    if (!config?.paymentsAvailable) { message('form-error', '收款暂时不可用，请稍后重试。'); return; }
+    const amount = $('amount').value.trim();
+    if (!/^(?:0|[1-9]\d{0,5})(?:\.0{1,2})?$/.test(amount) || Number(amount) < Number(config.minAmount) || Number(amount) > Number(config.maxAmount)) { message('form-error', `请输入 ${config.minAmount}–${config.maxAmount} CNY，仅支持整数元。`); $('amount').focus(); return; }
+    if (!$('nickname').value.trim() && !await confirmAnonymous()) return;
+    if (config.turnstileSiteKey && !token) { message('form-error', '请先完成人机验证。'); return; }
+    const body = { amount, nickname: $('nickname').value.trim(), message: $('message').value.trim(), paymentMethod: new FormData(form).get('paymentMethod') };
+    const fingerprint = JSON.stringify(body);
+    if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
+    busy(true);
+    try {
+      order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 });
+      storage.set(order); await renderOrder(); timer = setTimeout(poll, 4000);
+    } catch (error) { message('form-error', error.name === 'TimeoutError' ? '请求暂未返回。请点击重试，同一笔请求不会重复创建订单。' : error.message); }
+    finally { busy(false); resetCaptcha(); }
+  } finally { submitting = false; }
 });
 $('check-payment').addEventListener('click', () => { clearTimeout(timer); poll(); });
 $('start-again').addEventListener('click', () => {
@@ -114,7 +134,7 @@ $('demo-pay').addEventListener('click', async () => {
   finally { $('demo-pay').disabled = false; }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else if (order?.status === 'pending') poll(); });
-window.addEventListener('pagehide', stopPolling);
+window.addEventListener('pagehide', () => { stopPolling(); if (nicknameDialog.open) nicknameDialog.close(); });
 window.addEventListener('pageshow', () => { if (order?.status === 'pending') { clearInterval(countdown); countdown = setInterval(tick, 1000); poll(); } });
 async function loadCaptcha() {
   if (!config.turnstileSiteKey || !config.paymentsAvailable) return;

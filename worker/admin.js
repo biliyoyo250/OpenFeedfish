@@ -24,7 +24,10 @@ export async function handleAdmin(request, env) {
   }
   if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
-  if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) return json(await authorizationConnectivity());
+  if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) {
+    const mode = new URL(request.url).searchParams.get('mode');
+    return json(await authorizationConnectivity(fetch, mode === 'dsh' || mode === 'client' ? mode : 'anonymous'));
+  }
   if (path === '/api/admin/orders' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT id,amount_fen,payment_method,nickname,message,status,payment_state,provider_status,provider_order_id,channel_order_id,created_at,paid_at,confirmed_at,last_check_error FROM orders WHERE is_demo=? ORDER BY created_at DESC LIMIT 50').bind(identity.demo ? 1 : 0).all();
     return json({ orders: rows.results.map((row) => ({ id: row.id, amount: formatAmount(row.amount_fen), currency: 'CNY', paymentMethod: row.payment_method, nickname: row.nickname, message: row.message, status: row.status, paymentState: row.payment_state, providerStatus: row.provider_status, providerOrderId: row.provider_order_id, channelOrderId: row.channel_order_id, lastCheckError: row.last_check_error, createdAt: new Date(row.created_at).toISOString(), paidAt: row.paid_at ? new Date(row.paid_at).toISOString() : null, confirmedAt: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null })) });

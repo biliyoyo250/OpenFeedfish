@@ -115,12 +115,13 @@ export async function cleanupAuthorization(env, fetcher = fetch, now = Date.now(
 }
 // A fixed anonymous request: no account data, caller headers, cookies, code or
 // verifier can enter this diagnostic or its exception message.
-export async function authorizationConnectivity(fetcher = fetch) {
+export async function authorizationConnectivity(fetcher = fetch, mode = 'anonymous') {
   try {
-    const response = await fetcher(`${origin}/auth-api/v0/users/current`, { headers: { Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(12000) });
+    const headers = { Accept: 'application/json', ...(mode === 'client' ? platformClientHeaders : {}), ...(mode === 'dsh' ? { 'x-dsh-auth-token': 'feedfish-format-probe-not-a-credential' } : {}) };
+    const response = await fetcher(`${origin}/auth-api/v0/users/current`, { headers, redirect: 'manual', signal: AbortSignal.timeout(12000) });
     const isJson = response.headers.get('content-type')?.includes('application/json') || false;
     let code = null;
     if (isJson) { const value = await response.json(); if (Number.isInteger(value.code)) code = value.code; }
-    return { reachable: true, httpStatus: response.status, isJson, code };
-  } catch (error) { return { reachable: false, errorType: String(error.name).slice(0,50), message: String(error.message).slice(0,240) }; }
+    return { mode, reachable: true, httpStatus: response.status, isJson, code };
+  } catch (error) { return { mode, reachable: false, errorType: String(error.name).slice(0,50), message: String(error.message).slice(0,240) }; }
 }

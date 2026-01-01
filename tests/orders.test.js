@@ -12,7 +12,7 @@ import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
 import { applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
 import { importSession } from '../worker/admin.js';
-import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics } from '../worker/browser-login.js';
+import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics, browserResourceStatus } from '../worker/browser-login.js';
 import { cookieHeader } from '../worker/provider.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 
@@ -224,6 +224,17 @@ test('login diagnostics expose only the current SSO subject and never browser co
   const result = await browserLoginDiagnostics(env, identity, sdk);
   assert.equal(result.active, false); assert.equal(result.closeReason, 'BrowserIdle');
   assert.doesNotMatch(JSON.stringify(result), /private-browser-session|secret-connection|must-not-leak/);
+});
+test('resource checks do not launch browsers or expose session capabilities or SDK errors', async () => {
+  const sdk = {
+    acquire: () => { throw new Error('must not launch'); },
+    limits: async () => ({ activeSessions: [{ id: 'private-session', connectionId: 'private-connection' }], maxConcurrentSessions: 3, allowedBrowserAcquisitions: 0, timeUntilNextAllowedBrowserAcquisition: 20, extra: 'private-extra' }),
+  };
+  const result = await browserResourceStatus({ BROWSER: {} }, sdk);
+  assert.deepEqual(result, { mode: 'resources', configured: true, activeSessions: 1, maxConcurrentSessions: 3, allowedBrowserAcquisitions: 0, timeUntilNextAllowedBrowserAcquisition: 20 });
+  sdk.limits = async () => { throw new Error('private-error'); };
+  assert.deepEqual(await browserResourceStatus({ BROWSER: {} }, sdk), { mode: 'resources', configured: true, code: 'BROWSER_RESOURCES_UNAVAILABLE' });
+  assert.deepEqual(await browserResourceStatus({}, sdk), { mode: 'resources', configured: false });
 });
 test('CNY money uses integer fen and rejects coercion/rounding/overflow', () => {
   assert.equal(parseAmount('1.01'), 101); assert.equal(parseAmount('100000.00'), 10000000); assert.equal(formatAmount(1001), '10.01');

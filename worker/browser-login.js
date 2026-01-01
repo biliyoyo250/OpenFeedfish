@@ -190,6 +190,24 @@ export async function cleanupBrowserLogin(env, sdk, now = Date.now()) {
   const row = await rowFor(env);
   if (row && row.state !== 'closed' && row.expires_at <= now) await closeRow(env, row, sdk);
 }
+export async function browserResourceStatus(env, sdk) {
+  if (!env.BROWSER) return { mode: 'resources', configured: false };
+  try {
+    sdk ||= await sdkFor();
+    const limits = await sdk.limits(env.BROWSER);
+    const count = (value) => Number.isFinite(value) && value >= 0 ? value : null;
+    // Return counts only. Session IDs and connection capabilities stay private.
+    return {
+      mode: 'resources', configured: true,
+      activeSessions: Array.isArray(limits.activeSessions) ? limits.activeSessions.length : null,
+      maxConcurrentSessions: count(limits.maxConcurrentSessions),
+      allowedBrowserAcquisitions: count(limits.allowedBrowserAcquisitions),
+      timeUntilNextAllowedBrowserAcquisition: count(limits.timeUntilNextAllowedBrowserAcquisition),
+    };
+  } catch {
+    return { mode: 'resources', configured: true, code: 'BROWSER_RESOURCES_UNAVAILABLE' };
+  }
+}
 export async function anonymousBrowserConnectivity(env) {
   let browser;
   try {

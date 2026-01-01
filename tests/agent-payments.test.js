@@ -4,7 +4,7 @@ import { paymentJob, paymentJobResult, PAYMENT_JOB_TTL, PAYMENT_RPC_TIMEOUT } fr
 import { executePaymentJob } from '../scripts/agent-payments.mjs';
 import { agentPaymentFetcher } from '../worker/agent-payments.js';
 import { BrowserAgentRelay } from '../worker/browser-agent-relay.js';
-import { createPayment, mapPaymentResult } from '../worker/provider.js';
+import { createPayment, queryPayment, mapPaymentResult } from '../worker/provider.js';
 const base = (operation = 'create') => ({ type: 'payment-job', id: crypto.randomUUID(), accountId: 'fixed', operation, requestId: crypto.randomUUID(), paymentMethod: 'wechat', amountFen: 100 });
 const envelope = (data) => ({ ok: true, creationAttempted: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: data } } });
 const account = async () => ({ ok: true, accountId: 'fixed', currency: 'CNY', eligible: true });
@@ -74,6 +74,17 @@ test('an invalid HTTP response after RPC dispatch remains uncertain rather than 
   const input = { requestId: crypto.randomUUID(), paymentMethod: 'wechat' };
   const fetcher = agentPaymentFetcher(env, input);
   await assert.rejects(fetcher('https://platform.deepseek.com/api/v1/payments', { method: 'POST', body: JSON.stringify({ order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: 'WECHAT', amount: '1', currency: 'CNY', request_id: input.requestId } }) }), { code: 'AGENT_PROTOCOL', creationAttempted: true });
+});
+
+test('agent-marked ledger rows query the same host and use only matched official paid time', async () => {
+  const operations = []; const now = Date.now(); const paidAt = new Date(now - 5000).toISOString();
+  const env = rpcEnv((job) => {
+    operations.push(job.operation);
+    return envelope(job.operation === 'capture' ? { order: { id: 'synthetic-order', status: 'SUCCESS', amount: '1', currency: 'CNY' } } : { invoices: { payment_orders: [{ payment_order_id: 'synthetic-order', amount: '1', currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: paidAt, private: 'never-forward' }] } });
+  });
+  const result = await queryPayment(env, { provider_transport: 'agent', provider_order_id: 'synthetic-order', amount_fen: 100, created_at: now - 60000, paid_at: null });
+  assert.deepEqual(operations, ['capture', 'invoice']);
+  assert.deepEqual(result, { status: 'paid', providerStatus: 'SUCCESS', paidAt: Date.parse(paidAt) });
 });
 
 test('relay RPC times out without replay and reports dispatched creation as uncertain', async (t) => {

@@ -1,6 +1,8 @@
-import { mkdir, cp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, cp, readFile, writeFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { build } from 'esbuild';
+// Rebuild from scratch so removed assets cannot linger in the published output.
+await rm('dist', { recursive: true, force: true });
 await mkdir('dist', { recursive: true });
 await cp('public', 'dist', { recursive: true });
 await build({ entryPoints: ['frontend/app.js'], bundle: true, minify: true, format: 'esm', target: ['es2022'], outfile: 'dist/app.js' });

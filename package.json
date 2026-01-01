@@ -9,7 +9,7 @@
     "test": "node --test",
     "check": "npm test && npm run build && wrangler deploy --dry-run",
     "deploy:worker": "wrangler deploy",
-    "deploy:pages": "wrangler pages deploy dist --config wrangler.pages.jsonc --project-name feedfish"
+    "deploy:pages": "wrangler pages deploy --cwd pages --project-name feedfish"
   },
   "dependencies": {
     "jose": "6.2.15",

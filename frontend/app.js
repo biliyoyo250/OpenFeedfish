@@ -28,7 +28,7 @@ const weChatChannelDialog = $('wechat-channel-dialog');
 const qrImage = $('qr-image');
 const qrDownload = $('qr-download');
 const unavailableImage = $('payment-unavailable-image');
-const unavailableAnimation = '/assets/payment-peek.webp';
+const unavailableAnimation = '/assets/payment-peek.webp?v=2';
 const unavailablePoster = '/assets/payment-peek.png';
 initFish();
 const storage = {

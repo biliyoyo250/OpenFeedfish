@@ -299,7 +299,7 @@ checkButton.addEventListener('click', () => {
   if (!checkButton.disabled) void mutate('/api/admin/account/check', {}, '连接验证已完成，账户状态已更新。');
 });
 browserCheckButton.addEventListener('click', () => {
-  if (!browserCheckButton.disabled) void mutate('/api/admin/account/check', { transport: 'browser' }, 'Cloudflare 云浏览器已核验固定账户，未创建付款账单。');
+  if (!browserCheckButton.disabled) void mutate('/api/admin/account/check', { transport: 'browser', paymentContext: true }, 'Cloudflare 云浏览器已核验固定账户，并取得官网 SDK 的设备信息。未创建付款账单。');
 });
 providerCheckButton.addEventListener('click', async () => {
   if (providerCheckButton.disabled || busy) return;

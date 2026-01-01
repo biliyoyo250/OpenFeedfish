@@ -103,9 +103,10 @@ export async function handleAdmin(request, env) {
   }
   if (path === '/api/admin/account/check') {
     if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '账户核验方式无效。');
+    if (body.paymentContext !== undefined && typeof body.paymentContext !== 'boolean') throw new ApiError(400, 'INVALID_REQUEST', '支付环境检查参数无效。');
     try {
       const credentials = await credentialsFor(env, true);
-      const account = body.transport === 'browser' ? await verifyAccountInBrowser(env, credentials) : await verifyAccount(env, credentials);
+      const account = body.transport === 'browser' ? await verifyAccountInBrowser(env, credentials, undefined, body.paymentContext === true) : await verifyAccount(env, credentials);
       const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
       await env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET last_checked_at=excluded.last_checked_at').bind(account.id, sealed, 'connected', now, now, identity.email).run();
     }

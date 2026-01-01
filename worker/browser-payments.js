@@ -1,5 +1,6 @@
 import { ApiError } from './lib.js';
 import { withVerifiedAccountBrowser } from './browser-login.js';
+import { paymentDeviceId } from './payment-device.js';
 
 // Scoped admin transport: either a one-yuan QR test or polling one existing
 // order. A capture scope cannot create orders or query any other order.
@@ -17,6 +18,7 @@ export function browserPaymentFetcher(env, credentials, sdk, providerOrderId) {
       if (!permitted) throw new ApiError(400, 'INVALID_REQUEST', '请求不符合本次固定支付测试或查单范围。');
       return await withVerifiedAccountBrowser(env, credentials, async (page, headers) => {
         if (new URL(page.url()).origin !== 'https://platform.deepseek.com') throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止付款码请求。');
+        const deviceId = capturePath ? null : await paymentDeviceId(page);
         attempted = true;
         const result = await page.evaluate(async ({ headers, body, capturePath }) => {
           if (location.origin !== 'https://platform.deepseek.com') return { wrongOrigin: true };
@@ -31,7 +33,7 @@ export function browserPaymentFetcher(env, credentials, sdk, providerOrderId) {
             result.data = { code: data?.code, data: { biz_code: data?.data?.biz_code, biz_data: filtered } };
           }
           return result;
-        }, { headers, capturePath, body: capturePath ? null : { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: info.fallback_method_type, amount: '1', currency: 'CNY', request_id: info.request_id }, shumei_device_id: credentials.shumeiDeviceId || null } });
+        }, { headers, capturePath, body: capturePath ? null : { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: info.fallback_method_type, amount: '1', currency: 'CNY', request_id: info.request_id }, shumei_device_id: deviceId } });
         if (result.wrongOrigin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止付款码请求。');
         return new Response(result.isJson ? JSON.stringify(result.data) : '', { status: result.httpStatus, headers: { ...(result.isJson ? { 'Content-Type': 'application/json' } : {}), ...(result.challenge ? { 'x-amzn-waf-action': result.challenge } : {}) } });
       }, sdk);

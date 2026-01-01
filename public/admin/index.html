@@ -36,7 +36,7 @@
       <p id="account-id-warning" class="inline-warning" hidden>首次导入会话后会识别并锁定账户。将其 ID 配置为 <code>DEEPSEEK_ACCOUNT_ID</code> 后才可开放收款。</p>
       <div class="panel-bottom"><p class="small muted">会话更新时间：<span id="updated-at">—</span></p><div class="action-group"><button id="check-button" class="button" type="button" disabled>验证连接</button><button id="disable-button" class="button danger" type="button" disabled>停止新订单</button></div></div>
       <details class="manual-session"><summary>验证支付通道</summary>
-        <p class="field-help">通过 Cloudflare 浏览器核验已保存的账户，不发起付款。</p>
+        <p class="field-help">通过 Cloudflare 浏览器核验已保存的账户和支付环境，不发起付款。</p>
         <button id="browser-check-button" class="button" type="button" disabled>云浏览器核验账户</button>
         <p class="field-help">创建 1 CNY 测试账单，记录到最近账单中。</p>
         <label class="field-help browser-mode"><input id="browser-payment-mode" type="checkbox"> 使用 Cloudflare 浏览器取码</label>

@@ -4,11 +4,13 @@ import { runInNewContext } from 'node:vm';
 import { verifyAccountInBrowser } from '../worker/browser-login.js';
 import { browserPaymentFetcher } from '../worker/browser-payments.js';
 import { mapPaymentResult } from '../worker/provider.js';
+import { paymentDeviceId } from '../worker/payment-device.js';
 
 function browserSetup(response = () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY', email: 'private@example.test', token: 'must-not-return' } } })) {
   const counts = { acquisitions: 0, connections: 0, evaluations: 0, requests: 0, terminations: 0, disconnects: 0 };
   const credentials = { dshToken: 'existing-private-grant', deviceId: 'existing-device', deviceModel: 'trusted-client' };
   const env = { BROWSER: {}, DEEPSEEK_ACCOUNT_ID: 'fixed' };
+  const device = { value: 'generated-cloud-device' };
   let url = 'about:blank';
   const page = {
     url: () => url,
@@ -20,7 +22,8 @@ function browserSetup(response = () => Response.json({ code: 0, data: { biz_code
     evaluate: async (fn, headers) => {
       counts.evaluations++;
       return runInNewContext(`(${fn.toString()})(headers)`, {
-        headers, location: { origin: new URL(url).origin }, AbortSignal,
+        headers, location: { origin: new URL(url).origin }, AbortSignal, setTimeout, clearTimeout,
+        window: { SMSdk: { ready: (callback) => callback(), getDeviceId: () => device.value } },
         fetch: async (target, options) => {
           counts.requests++;
           assert.ok(['https://platform.deepseek.com/auth-api/v0/users/current', 'https://platform.deepseek.com/api/v1/payments', 'https://platform.deepseek.com/api/v1/payments/known-order/capture'].includes(target));
@@ -46,7 +49,7 @@ function browserSetup(response = () => Response.json({ code: 0, data: { biz_code
     endpointURLString: () => 'http://fake.test/v1/devtools/browser/private-session',
     connect: async () => { counts.connections++; return browser; },
   };
-  return { env, credentials, sdk, page, browser, counts };
+  return { env, credentials, sdk, page, browser, counts, device };
 }
 
 test('browser account checks authenticate only the fixed read-only endpoint and close the instance', async () => {
@@ -66,10 +69,12 @@ test('browser QR transport binds the live account, sends one fixed payment reque
     paymentCalls++;
     const body = JSON.parse(options.body);
     assert.equal(body.order_info.amount, '1'); assert.equal(body.order_info.currency, 'CNY');
+    assert.equal(body.shumei_device_id, 'generated-cloud-device');
     assert.equal(body.untrusted, undefined);
     return Response.json({ code: 0, data: { biz_code: 0, secret: 'must-not-return', biz_data: { payment_order_id: 'test-order', amount: '1', currency: 'CNY', url: 'weixin://test', private: 'must-not-return' } } });
   });
   const body = { order_info: { amount: '1', currency: 'CNY', payment_method_type: 'CMB_UNIONPAY', fallback_method_type: 'WECHAT', request_id: crypto.randomUUID() }, untrusted: 'drop' };
+  state.credentials.shumeiDeviceId = 'stale-device-from-another-browser';
   const response = await browserPaymentFetcher(state.env, state.credentials, state.sdk)('https://platform.deepseek.com/api/v1/payments', { method: 'POST', body: JSON.stringify(body) });
   const text = await response.text();
   assert.equal(JSON.parse(text).data.biz_data.payment_order_id, 'test-order');
@@ -127,6 +132,38 @@ test('browser capture retains only the safe challenge marker and never repeats a
   assert.equal(response.status, 202); assert.equal(response.headers.get('x-amzn-waf-action'), 'challenge');
   assert.equal(await response.text(), '');
   assert.equal(state.counts.requests, 2); assert.equal(state.counts.terminations, 1);
+});
+
+test('payment context checks read the actual SDK device without creating a bill or returning the device', async () => {
+  const state = browserSetup();
+  const account = await verifyAccountInBrowser(state.env, state.credentials, state.sdk, true);
+  assert.deepEqual(account, { id: 'fixed', currency: 'CNY' });
+  assert.ok(!JSON.stringify(account).includes(state.device.value));
+  assert.equal(state.counts.requests, 1); assert.equal(state.counts.terminations, 1);
+});
+
+test('a missing SDK identity stops creation before the payment POST and closes the browser', async () => {
+  const state = browserSetup(); state.device.value = '';
+  const options = { method: 'POST', body: JSON.stringify({ order_info: { amount: '1', currency: 'CNY', payment_method_type: 'CMB_UNIONPAY', fallback_method_type: 'WECHAT', request_id: crypto.randomUUID() } }) };
+  await assert.rejects(browserPaymentFetcher(state.env, state.credentials, state.sdk)('https://platform.deepseek.com/api/v1/payments', options), (error) => error.code === 'PAYMENT_DEVICE_UNAVAILABLE' && error.creationAttempted === false);
+  assert.equal(state.counts.requests, 1); assert.equal(state.counts.terminations, 1);
+});
+
+test('SDK initialization loads only the official fixed script and fails closed on another origin', async () => {
+  const runtime = { location: { origin: 'https://platform.deepseek.com' }, window: {}, setTimeout, clearTimeout };
+  runtime.document = {
+    querySelector: () => null,
+    createElement: (tag) => { assert.equal(tag, 'script'); return { dataset: {} }; },
+    head: { appendChild: (script) => {
+      assert.equal(script.src, '/static/fp.min.js'); assert.equal(script.dataset.fp, 'true');
+      runtime.window.SMSdk = { ready: (callback) => callback(), getDeviceId: () => 'actual-sdk-value' };
+      script.onload();
+    } },
+  };
+  const page = { evaluate: (fn) => runInNewContext(`(${fn.toString()})()`, runtime) };
+  assert.equal(await paymentDeviceId(page), 'actual-sdk-value');
+  runtime.location.origin = 'https://other.example';
+  await assert.rejects(paymentDeviceId(page), { code: 'PAYMENT_DEVICE_UNAVAILABLE' });
 });
 
 test('browser checks reject challenges, expired grants, wrong accounts and unavailable CNY permissions', async () => {

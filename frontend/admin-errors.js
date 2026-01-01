@@ -1,4 +1,5 @@
 const messages = {
+  PAYMENT_DEVICE_UNAVAILABLE: '未能取得官网 SDK 的设备信息，未发起付款请求。',
   BROWSER_NOT_CONFIGURED: '云浏览器或固定账户尚未配置。',
   BROWSER_GRANT_REQUIRED: '云浏览器核验需要已保存的官方授权。',
   BROWSER_BUSY: '云浏览器资源暂不可用，请稍后再核验。',

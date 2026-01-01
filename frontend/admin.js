@@ -5,6 +5,10 @@ const refreshButton = element('refresh-button');
 const checkButton = element('check-button');
 const disableButton = element('disable-button');
 const importButton = element('import-button');
+const loginStart = element('login-start');
+const loginComplete = element('login-complete');
+const loginCancel = element('login-cancel');
+const loginLink = element('login-link');
 let session = null;
 let busy = false;
 
@@ -45,6 +49,13 @@ function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
   fields.disabled = !writable;
   importButton.disabled = fields.disabled;
+  const browserReady = writable && session.browserLoginAvailable;
+  const activeLogin = Boolean(session?.browserLogin && Date.parse(session.browserLogin.expiresAt) > Date.now());
+  loginStart.disabled = !browserReady;
+  loginStart.textContent = activeLogin ? '重新打开登录窗口' : '打开官方登录窗口';
+  loginComplete.disabled = !browserReady || !activeLogin;
+  loginCancel.hidden = !activeLogin;
+  loginCancel.disabled = !browserReady;
   refreshButton.disabled = !writable;
   checkButton.disabled = !writable || !(session?.account?.configured || session?.account?.status === 'disabled');
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
@@ -52,6 +63,7 @@ function updateControls() {
 
 function lockAccess() {
   session = null;
+  clearLoginLink();
   form.reset();
   updateControls();
   element('access-state').textContent = '权限未就绪';
@@ -68,6 +80,11 @@ function lockAccess() {
   element('orders-container').hidden = true;
   element('orders-loading').hidden = true;
   element('orders-empty').hidden = true;
+}
+
+function clearLoginLink() {
+  loginLink.hidden = true;
+  loginLink.removeAttribute('href');
 }
 
 async function request(path, body) {
@@ -106,6 +123,10 @@ function renderSession(data) {
     throw new Error('账户状态暂不可用，请稍后重新加载页面。');
   }
   session = data;
+  if (!data.browserLogin) clearLoginLink();
+  element('login-state').textContent = data.browserLogin
+    ? `请在官方窗口完成登录，再回来保存。窗口截止 ${dateLabel(data.browserLogin.expiresAt)}。`
+    : data.browserLoginAvailable ? '登录窗口最长保留 5 分钟；仅保存已验证会话，不保存密码或短信验证码。' : '官方登录窗口暂未启用。';
   element('access-error').hidden = true;
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
@@ -217,7 +238,8 @@ async function mutate(path, body, successMessage, sensitive = false) {
     setNotice(successMessage);
   } catch (error) {
     // Credential import failures use our own text, never an upstream response that could echo input.
-    const message = sensitive ? '会话验证未完成，请确认这是收款账户的有效网页登录会话，必要时填写对应设备信息。' : error.message;
+    const sessionErrors = { LOGIN_PENDING: '请在官方窗口完成登录和验证，再保存会话。', LOGIN_EXPIRED: '登录窗口已结束，请重新打开。', ACCOUNT_MISMATCH: '此登录账号与固定收款账户不一致，未替换已有会话。', SESSION_EXPIRED: '官方会话未通过后端核验，请重新登录后再保存。' };
+    const message = sensitive ? sessionErrors[error.code] || '会话验证未完成，请确认收款账户已经登录后重试。' : error.message;
     setNotice(saved ? `操作已完成，但刷新状态失败。${message}` : message, true);
   } finally {
     busy = false;
@@ -239,6 +261,27 @@ form.addEventListener('submit', (event) => {
     return;
   }
   void mutate('/api/admin/account/session', payload, '会话已验证并保存，账户状态已更新。', true);
+});
+
+loginStart.addEventListener('click', async () => {
+  if (loginStart.disabled) return;
+  busy = true; updateControls(); clearLoginLink(); setNotice('正在打开官方登录窗口…');
+  try {
+    const data = await request('/api/admin/account/login/start', {});
+    const url = new URL(data.liveViewUrl);
+    if (url.origin !== 'https://live.browser.run' || !url.pathname.startsWith('/ui/') || !data.id || !data.expiresAt) throw new Error('未取得有效的登录窗口。');
+    session.browserLogin = { id: data.id, expiresAt: data.expiresAt };
+    loginLink.href = url.href; loginLink.hidden = false;
+    element('login-state').textContent = '点击下方链接进入官方窗口。完成登录后，回到这里保存会话。进入链接在 1 分钟后失效，可重新打开。';
+    setNotice('登录窗口已准备好。');
+  } catch (error) { setNotice(error.message, true); }
+  finally { busy = false; updateControls(); }
+});
+loginComplete.addEventListener('click', () => {
+  if (!loginComplete.disabled) void mutate('/api/admin/account/login/complete', { id: session.browserLogin.id }, '官方登录会话已验证并加密保存。', true);
+});
+loginCancel.addEventListener('click', () => {
+  if (!loginCancel.disabled && session?.browserLogin) void mutate('/api/admin/account/login/cancel', { id: session.browserLogin.id }, '登录窗口已关闭。');
 });
 
 checkButton.addEventListener('click', () => {
@@ -265,7 +308,7 @@ refreshButton.addEventListener('click', async () => {
   }
 });
 
-window.addEventListener('pagehide', () => { form.reset(); });
+window.addEventListener('pagehide', () => { form.reset(); clearLoginLink(); });
 updateControls();
 refresh().catch((error) => {
   session = null;

@@ -12,6 +12,7 @@
     "deploy:pages": "wrangler pages deploy --cwd pages --project-name feedfish"
   },
   "dependencies": {
+    "@cloudflare/playwright": "1.3.6",
     "jose": "6.2.15",
     "qrcode": "1.5.4"
   },

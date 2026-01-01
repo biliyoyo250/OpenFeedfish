@@ -9,18 +9,96 @@ import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
 import { applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
 import { importSession } from '../worker/admin.js';
+import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser } from '../worker/browser-login.js';
+import { cookieHeader } from '../worker/provider.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 
 function setup() {
   const db = new DatabaseSync(':memory:'); db.exec(readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0002_account.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0003_reconciliation.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0004_browser_login.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
   const create = (body = {}, key = crypto.randomUUID()) => request('/api/orders', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify({ amount: '10.00', paymentMethod: 'wechat', nickname: '小鱼', message: '继续加油', ...body }) });
   return { db, env, request, create };
 }
+
+function loginSetup() {
+  const state = setup();
+  state.env.BROWSER = {};
+  state.env.ACCOUNT_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64');
+  const user = { id: 'fixed-browser-account', currency: 'CNY', feature_gates: { PAYMENT: true } };
+  const counts = { acquisitions: 0, terminations: 0, disconnects: 0 };
+  const cookies = [{ name: 'platform_session', value: 'private-cookie-value', domain: 'platform.deepseek.com', path: '/', secure: true, expires: -1 }, { name: 'google_session', value: 'must-not-save', domain: '.google.com', path: '/' }];
+  let currentUrl = 'about:blank';
+  const context = { pages: () => [page], newPage: async () => page, cookies: async () => cookies, newCDPSession: async () => ({ send: async () => ({ devtoolsFrontendUrl: 'https://live.browser.run/ui/view?mode=tab&wss=private-capability' }), detach: async () => {} }) };
+  const page = { url: () => currentUrl, goto: async (url) => { currentUrl = url; }, context: () => context, waitForResponse: async () => ({ ok: () => true, json: async () => ({ code: 0, data: { biz_code: 0, biz_data: user } }), request: () => ({ headers: () => ({ authorization: 'Bearer private-web-session-token', 'x-device-id': 'trusted-device' }) }) }) };
+  const browser = { contexts: () => [context], close: async () => { counts.disconnects++; }, newBrowserCDPSession: async () => ({ send: async () => { counts.terminations++; } }) };
+  const sdk = { acquire: async () => { counts.acquisitions++; return { sessionId: 'private-browser-session' }; }, connect: async () => browser };
+  return { ...state, sdk, user, counts, cookies };
+}
+
+test('official login saves only verified fixed-origin credentials and destroys its capability', async () => {
+  const { env, db, sdk, user, counts } = loginSetup(); const identity = { sub: 'owner-one' };
+  const attempt = await startBrowserLogin(env, identity, sdk);
+  const loginRow = db.prepare('SELECT * FROM account_login').get();
+  assert.equal(loginRow.sealed_session.includes('private-browser-session'), false);
+  const account = await completeBrowserLogin(env, identity, attempt.id,
+    (credentials) => importSession(env, credentials, 'owner@example.com', Date.now(), async (_url, options) => {
+      assert.equal(options.headers.Authorization, 'Bearer private-web-session-token');
+      assert.equal(options.headers.Cookie, 'platform_session=private-cookie-value');
+      return Response.json({ code: 0, data: { biz_code: 0, biz_data: user } });
+    }), sdk);
+  assert.equal(account.id, user.id);
+  assert.equal((await accountState(env)).configured, false);
+  env.DEEPSEEK_ACCOUNT_ID = user.id;
+  const stored = await credentialsFor(env);
+  assert.equal(stored.cookies.length, 1); assert.equal(stored.cookies[0].name, 'platform_session');
+  assert.equal(db.prepare('SELECT sealed_credentials FROM account_session').get().sealed_credentials.includes('private-cookie-value'), false);
+  assert.equal(db.prepare('SELECT state,sealed_session FROM account_login').get().sealed_session, null);
+  assert.equal(counts.terminations, 1);
+  await assert.rejects(completeBrowserLogin(env, identity, attempt.id, () => assert.fail('replayed login'), sdk), { code: 'LOGIN_EXPIRED' });
+});
+
+test('login attempts enforce SSO subject ownership, single launch and cancellation', async () => {
+  const { env, sdk, db, counts } = loginSetup(); const owner = { sub: 'owner' }, other = { sub: 'other' };
+  const attempt = await startBrowserLogin(env, owner, sdk);
+  assert.equal(await browserLoginState(env, other), null);
+  await assert.rejects(startBrowserLogin(env, other, sdk), { code: 'LOGIN_BUSY' });
+  await assert.rejects(completeBrowserLogin(env, other, attempt.id, () => assert.fail('wrong owner'), sdk), { code: 'LOGIN_EXPIRED' });
+  await assert.rejects(cancelBrowserLogin(env, other, attempt.id, sdk), { code: 'LOGIN_EXPIRED' });
+  const resumed = await startBrowserLogin(env, owner, sdk);
+  assert.equal(resumed.id, attempt.id); assert.equal(counts.acquisitions, 1);
+  await cancelBrowserLogin(env, owner, attempt.id, sdk);
+  assert.equal(counts.terminations, 1); assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'closed');
+});
+
+test('expired login is closed and failed credential verification never replaces the vault', async () => {
+  const { env, sdk, db, counts } = loginSetup(); const identity = { sub: 'owner' };
+  const attempt = await startBrowserLogin(env, identity, sdk);
+  await assert.rejects(completeBrowserLogin(env, identity, attempt.id, async () => { throw Object.assign(new Error('unusable'), { code: 'SESSION_EXPIRED' }); }, sdk));
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
+  assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'open');
+  db.prepare('UPDATE account_login SET expires_at=?').run(Date.now() - 1);
+  await cleanupBrowserLogin(env, sdk);
+  assert.equal(counts.terminations, 1); assert.equal(db.prepare('SELECT sealed_session FROM account_login').get().sealed_session, null);
+});
+
+test('browser authentication preserves cookie-only sessions and filters origin, path, expiry and header injection', async () => {
+  const valid = { name: 'session', value: 'valid', domain: '.deepseek.com', path: '/auth-api', expires: -1 };
+  const credentials = credentialsFromBrowser({}, [valid, { ...valid, domain: 'other.deepseek.com' }, { ...valid, domain: 'evil.example' }]);
+  assert.equal(credentials.sessionToken, undefined); assert.equal(credentials.cookies.length, 1);
+  const cookies = [...credentials.cookies, { ...valid, name: 'expired', expires: 1 }, { ...valid, name: 'bad\r\nheader' }, { ...valid, value: 'bad;injected=value' }];
+  assert.equal(cookieHeader(cookies, '/auth-api/v0/users/current'), 'session=valid');
+  assert.equal(cookieHeader(cookies, '/api/v1/payments'), '');
+  assert.equal(cookieHeader(cookies, '/auth-api-other'), '');
+  await upstream('/auth-api/v0/users/current', credentials, undefined, async (_url, options) => {
+    assert.equal(options.headers.Authorization, undefined); assert.equal(options.headers.Cookie, 'session=valid');
+    return Response.json({ code: 0, data: { biz_code: 0, biz_data: {} } });
+  });
+});
 test('CNY money uses integer fen and rejects coercion/rounding/overflow', () => {
   assert.equal(parseAmount('1.01'), 101); assert.equal(parseAmount('100000.00'), 10000000); assert.equal(formatAmount(1001), '10.01');
   for (const value of [1, null, undefined, '', '0.99', '-1', '1e2', '1.001', 'Infinity', '100000.01', '01', ' 10', '.5', '1.']) assert.throws(() => parseAmount(value));

@@ -3,6 +3,8 @@
   "name": "feedfish-api",
   "main": "worker/index.js",
   "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "browser": { "binding": "BROWSER" },
   "workers_dev": false,
   "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/api/*", "/admin", "/admin/*"] },
   "vars": { "LOCAL_DEMO": "false", "TURNSTILE_SITE_KEY": "", "PAYMENTS_ENABLED": "false", "DEEPSEEK_ACCOUNT_ID": "", "ACCESS_TEAM_DOMAIN": "", "ACCESS_AUD": "", "ADMIN_EMAILS": "" },

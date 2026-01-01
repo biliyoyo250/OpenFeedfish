@@ -6,7 +6,11 @@ export async function providerReady(env) {
   return !!env.DEEPSEEK_ACCOUNT_ID && state.configured;
 }
 export async function upstream(path, credentials, body, fetcher = fetch) {
-  const headers = { Authorization: `Bearer ${credentials.sessionToken}`, Accept: 'application/json', Origin: origin, Referer: `${origin}/top_up` };
+  const headers = { Accept: 'application/json', Origin: origin, Referer: `${origin}/top_up` };
+  if (credentials.sessionToken) headers.Authorization = `Bearer ${credentials.sessionToken}`;
+  if (credentials.dshToken) headers['x-dsh-auth-token'] = credentials.dshToken;
+  const cookie = cookieHeader(credentials.cookies || [], path);
+  if (cookie) headers.Cookie = cookie;
   if (credentials.deviceId) headers['x-device-id'] = credentials.deviceId;
   if (credentials.deviceModel) headers['x-device-model'] = credentials.deviceModel;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -23,6 +27,17 @@ export async function upstream(path, credentials, body, fetcher = fetch) {
   if (!response.ok) throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', '收款平台暂不可用，请稍后重试。');
   if (result.code !== 0 || result.data?.biz_code !== 0) throw new ApiError(502, 'UPSTREAM_REJECTED', '收款平台未接受请求，请管理员检查账号状态。');
   return result.data.biz_data;
+}
+export function cookieHeader(cookies, path, now = Date.now()) {
+  return cookies.filter((cookie) => {
+    const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
+    const cookiePath = cookie.path || '/';
+    return (domain === 'platform.deepseek.com' || domain === 'deepseek.com') &&
+      (path === cookiePath || path.startsWith(cookiePath.endsWith('/') ? cookiePath : `${cookiePath}/`)) &&
+      (!cookie.expires || cookie.expires < 0 || cookie.expires * 1000 > now) &&
+      typeof cookie.name === 'string' && /^[!#$%&'*+.^_`|~0-9a-z-]+$/i.test(cookie.name) &&
+      typeof cookie.value === 'string' && !/[^\x21-\x3A\x3C-\x7E]/.test(cookie.value);
+  }).sort((a, b) => (b.path || '/').length - (a.path || '/').length).map(({ name, value }) => `${name}=${value}`).join('; ');
 }
 export async function inspectAccount(credentials, fetcher = fetch) {
   const user = await upstream('/auth-api/v0/users/current', credentials, undefined, fetcher);

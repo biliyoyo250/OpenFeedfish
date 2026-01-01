@@ -3,7 +3,7 @@ import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount } from './provider.js';
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus } from './browser-login.js';
-import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity } from './authorization.js';
+import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure } from './authorization.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -24,6 +24,7 @@ export async function handleAdmin(request, env) {
   }
   if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
+  if (path === '/api/admin/account/authorize/diagnostics' && request.method === 'GET' && !identity.demo) return json({ failure: await lastAuthorizationFailure(env) });
   if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) {
     const mode = new URL(request.url).searchParams.get('mode');
     if (mode === 'resources') return json(await browserResourceStatus(env));
@@ -45,8 +46,13 @@ export async function handleAdmin(request, env) {
   const body = await readJson(request); const now = Date.now();
   if (path === '/api/admin/account/authorize/start') return json(await startAuthorization(env, identity, body));
   if (path === '/api/admin/account/authorize/complete') {
-    const account = await completeAuthorization(env, identity, body, (credentials) => importSession(env, credentials, identity.email));
-    return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
+    try {
+      const account = await completeAuthorization(env, identity, body, (credentials) => importSession(env, credentials, identity.email));
+      return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
+    } catch (error) {
+      if (!(error instanceof ApiError) || !error.authorizationDiagnostic) throw error;
+      return json({ error: { code: error.code, message: error.message, diagnostic: error.authorizationDiagnostic } }, error.status);
+    }
   }
   if (path === '/api/admin/account/authorize/cancel') { await cancelAuthorization(env, identity); return json({ ok: true }); }
   if (path === '/api/admin/account/login/start') return json(await startBrowserLogin(env, identity));

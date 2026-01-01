@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import worker from '../worker/index.js';
 import { ApiError, parseAmount, formatAmount, isDemo, validateOrder, verifyTurnstile } from '../worker/lib.js';
-import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization } from '../worker/authorization.js';
+import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization, lastAuthorizationFailure } from '../worker/authorization.js';
+import { accountErrorMessage } from '../frontend/admin-errors.js';
 import { createReceiver } from '../scripts/connect-account.mjs';
 import { verifyAccessToken } from '../worker/access.js';
 import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
@@ -128,6 +129,40 @@ test('authorization initialization never forwards an off-origin approval URL', a
 test('authorization classifies a cloud egress challenge without echoing upstream content', async () => {
   const { env, owner, input } = authorizationSetup();
   await assert.rejects(startAuthorization(env, owner, input, async () => new Response('private-upstream-content', { status: 405, headers: { 'Content-Type': 'text/html', 'x-amzn-waf-action': 'captcha' } })), (error) => error.code === 'AUTH_CHALLENGE' && error.message.includes('405') && !error.message.includes('private-upstream-content'));
+});
+
+test('failed code exchange records only its stage and numeric upstream codes', async () => {
+  const { env, db, owner, input, fetcher } = authorizationSetup();
+  await startAuthorization(env, owner, input, fetcher);
+  await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'private-one-time-code' }, () => assert.fail('no account check before exchange'), async () => Response.json({ code: 10001, msg: 'private-response-token', data: { biz_code: 7 } })), (error) => {
+    assert.deepEqual(error.authorizationDiagnostic, { stage: 'exchange', code: 'AUTH_REJECTED', upstreamStatus: 200, upstreamCode: 10001, upstreamBizCode: 7 });
+    return true;
+  });
+  const failure = await lastAuthorizationFailure(env);
+  assert.equal(failure.stage, 'exchange'); assert.equal(failure.upstreamBizCode, 7);
+  assert.doesNotMatch(JSON.stringify(db.prepare('SELECT event FROM admin_audit').all()), /private|code_verifier|authorize_url/);
+  assert.equal(db.prepare('SELECT state FROM account_authorization').get().state, 'closed');
+});
+
+test('an account HTTP challenge after exchange is distinct from an expired login and revokes the new grant', async () => {
+  const { env, db, owner, input, fetcher, calls } = authorizationSetup();
+  await startAuthorization(env, owner, input, fetcher);
+  await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'private-code' }, (credentials) => importSession(env, credentials, 'owner@example.com', Date.now(), async () => new Response('private-html-body', { status: 403, headers: { 'Content-Type': 'text/html' } })), fetcher), (error) => {
+    assert.deepEqual(error.authorizationDiagnostic, { stage: 'account', code: 'UPSTREAM_NOT_JSON', upstreamStatus: 403 });
+    assert.match(accountErrorMessage({ code: error.code, diagnostic: error.authorizationDiagnostic }), /账户核验 · HTTP 403/);
+    return true;
+  });
+  assert.equal((await lastAuthorizationFailure(env)).code, 'UPSTREAM_NOT_JSON');
+  assert.equal(calls.at(-1).url, 'https://platform.deepseek.com/auth-api/v0/users/logout');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
+  assert.doesNotMatch(JSON.stringify(db.prepare('SELECT event FROM admin_audit').all()), /private|token/);
+});
+
+test('admin errors never echo credential-related exception text or unknown diagnostic strings', () => {
+  const message = accountErrorMessage({ code: 'ACCOUNT_UNAVAILABLE', message: 'private-token', diagnostic: { stage: 'account', accountCheck: 'currency', upstreamStatus: 'private-token', upstreamCode: 'private-token' } });
+  assert.match(message, /CNY 币种/); assert.doesNotMatch(message, /private-token|已经登录/);
+  assert.doesNotMatch(accountErrorMessage({ code: 'private-token', message: 'private-token', diagnostic: { stage: 'constructor', accountCheck: '__proto__' } }), /private-token|constructor|Object/);
+  assert.match(accountErrorMessage({ code: 'ACCESS_DENIED' }), /Cloudflare Access/);
 });
 
 test('loopback receiver enforces Host, Origin, state and one callback; forwards only code in a fragment', async () => {
@@ -390,7 +425,7 @@ test('provider uses observed CNY endpoints, integer yuan, fixed account and pres
 });
 test('provider recognizes expired tokens even in HTTP errors and never leaks raw error text', async () => {
   await assert.rejects(upstream('/auth-api/v0/users/current', { sessionToken: 'private' }, undefined, async () => Response.json({ code: 40003, msg: 'private' }, { status: 401 })), { code: 'SESSION_EXPIRED' });
-  await assert.rejects(upstream('/auth-api/v0/users/current', { sessionToken: 'private' }, undefined, async () => new Response('<html>challenge private</html>', { status: 403 })), (error) => error.code === 'UPSTREAM_UNAVAILABLE' && !error.message.includes('private'));
+  await assert.rejects(upstream('/auth-api/v0/users/current', { sessionToken: 'private' }, undefined, async () => new Response('<html>challenge private</html>', { status: 403 })), (error) => error.code === 'UPSTREAM_NOT_JSON' && error.upstreamStatus === 403 && !error.message.includes('private'));
 });
 test('capture status cannot accept mismatched IDs, amounts or currencies', () => {
   const row = { provider_order_id: 'upstream-1', amount_fen: 1000 };

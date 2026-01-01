@@ -1,4 +1,4 @@
-import { ApiError, parseAmount } from './lib.js';
+import { ApiError, parseAmount, withUpstreamDiagnostic } from './lib.js';
 import { credentialsFor, accountState } from './vault.js';
 import { platformClientHeaders } from './authorization.js';
 const origin = 'https://platform.deepseek.com';
@@ -20,13 +20,13 @@ export async function upstream(path, credentials, body, fetcher = fetch) {
     response = await fetcher(`${origin}${path}`, { method: path.endsWith('/capture') || body !== undefined ? 'POST' : 'GET', headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(12000) });
     if (!response.headers.get('content-type')?.includes('application/json')) {
       if (response.status === 401) throw new ApiError(503, 'SESSION_EXPIRED', '收款账号登录已失效，请联系收款人。');
-      throw new Error();
+      throw new ApiError(503, 'UPSTREAM_NOT_JSON', '收款平台未返回可用的接口响应。');
     }
     result = await response.json();
-  } catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', '收款平台暂不可用，请稍后重试。'); }
-  if (response.status === 401 || result.code === 40002 || result.code === 40003) throw new ApiError(503, 'SESSION_EXPIRED', '收款账号登录已失效，请联系收款人。');
-  if (!response.ok) throw new ApiError(503, 'UPSTREAM_UNAVAILABLE', '收款平台暂不可用，请稍后重试。');
-  if (result.code !== 0 || result.data?.biz_code !== 0) throw new ApiError(502, 'UPSTREAM_REJECTED', '收款平台未接受请求，请管理员检查账号状态。');
+  } catch (error) { throw withUpstreamDiagnostic(error instanceof ApiError ? error : new ApiError(503, response ? 'UPSTREAM_PROTOCOL' : 'UPSTREAM_UNAVAILABLE', '收款平台暂不可用，请稍后重试。'), response); }
+  if (response.status === 401 || result?.code === 40002 || result?.code === 40003) throw withUpstreamDiagnostic(new ApiError(503, 'SESSION_EXPIRED', '收款账号登录已失效，请联系收款人。'), response, result);
+  if (!response.ok) throw withUpstreamDiagnostic(new ApiError(503, 'UPSTREAM_HTTP', '收款平台暂不可用，请稍后重试。'), response, result);
+  if (result?.code !== 0 || result?.data?.biz_code !== 0) throw withUpstreamDiagnostic(new ApiError(502, 'UPSTREAM_REJECTED', '收款平台未接受请求，请管理员检查账号状态。'), response, result);
   return result.data.biz_data;
 }
 export function cookieHeader(cookies, path, now = Date.now()) {
@@ -42,8 +42,9 @@ export function cookieHeader(cookies, path, now = Date.now()) {
 }
 export async function inspectAccount(credentials, fetcher = fetch) {
   const user = await upstream('/auth-api/v0/users/current', credentials, undefined, fetcher);
-  if (typeof user?.id !== 'string' || !user.id || user.id.length > 200) throw new ApiError(502, 'ACCOUNT_INVALID', '未能核对收款账号。');
-  if (user.currency !== 'CNY' || user.is_api_banned === true || user.feature_gates?.PAYMENT === false) throw new ApiError(409, 'ACCOUNT_UNAVAILABLE', '该账号当前不能用于 CNY 充值。');
+  if (typeof user?.id !== 'string' || !user.id || user.id.length > 200) throw Object.assign(new ApiError(502, 'ACCOUNT_INVALID', '未能核对收款账号。'), { accountCheck: 'identity' });
+  const check = user.currency !== 'CNY' ? 'currency' : user.is_api_banned === true ? 'banned' : user.feature_gates?.PAYMENT === false ? 'payment' : null;
+  if (check) throw Object.assign(new ApiError(409, 'ACCOUNT_UNAVAILABLE', '该账号当前不能用于 CNY 充值。'), { accountCheck: check });
   return { id: user.id, currency: user.currency };
 }
 export async function verifyAccount(env, credentials, fetcher = fetch) {

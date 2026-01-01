@@ -1,6 +1,12 @@
 export class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
 }
+export function withUpstreamDiagnostic(error, response, result) {
+  if (response) error.upstreamStatus = response.status;
+  if (Number.isInteger(result?.code)) error.upstreamCode = result.code;
+  if (Number.isInteger(result?.data?.biz_code)) error.upstreamBizCode = result.data.biz_code;
+  return error;
+}
 export function parseAmount(value) {
   if (typeof value !== 'string' || !/^(?:0|[1-9]\d{0,5})(?:\.\d{1,2})?$/.test(value)) throw new ApiError(400, 'INVALID_AMOUNT', '请输入有效的人民币金额，最多两位小数。');
   const [yuan, cents = ''] = value.split('.');

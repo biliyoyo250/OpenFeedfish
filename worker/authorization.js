@@ -1,4 +1,4 @@
-import { ApiError } from './lib.js';
+import { ApiError, withUpstreamDiagnostic } from './lib.js';
 import { seal, unseal } from './vault.js';
 
 const origin = 'https://platform.deepseek.com';
@@ -9,6 +9,26 @@ const closed = (env, id) => env.DB.prepare("UPDATE account_authorization SET sta
 const expired = () => new ApiError(409, 'AUTH_EXPIRED', '本次授权已结束，请重新运行本机连接助手。');
 const busy = () => new ApiError(409, 'AUTH_BUSY', '账户授权正在处理，请稍后重试。');
 const base64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REJECTED']);
+export function authorizationDiagnostic(stage, error) {
+  const value = { stage: ['initialize', 'exchange', 'account'].includes(stage) ? stage : 'account', code: diagnosticCodes.has(error?.code) ? error.code : 'AUTH_SAVE_FAILED' };
+  for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error?.[key])) value[key] = error[key];
+  if (['identity', 'currency', 'banned', 'payment'].includes(error?.accountCheck)) value.accountCheck = error.accountCheck;
+  return value;
+}
+async function recordFailure(env, identity, stage, error) {
+  const diagnostic = authorizationDiagnostic(stage, error);
+  if (error instanceof ApiError) error.authorizationDiagnostic = diagnostic;
+  // Never retain exception text, authorization codes, upstream bodies or tokens.
+  try { await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`authorization_failed:${JSON.stringify(diagnostic)}`, identity.email || identity.sub, Date.now()).run(); }
+  catch { /* Diagnostics must not replace the original connection failure. */ }
+}
+export async function lastAuthorizationFailure(env) {
+  const row = await env.DB.prepare("SELECT event,created_at FROM admin_audit WHERE event LIKE 'authorization_failed:%' ORDER BY id DESC LIMIT 1").first();
+  if (!row) return null;
+  try { const value = JSON.parse(row.event.slice('authorization_failed:'.length)); return { ...authorizationDiagnostic(value.stage, value), createdAt: new Date(row.created_at).toISOString() }; }
+  catch { return null; }
+}
 function authorizeUrl(value) {
   try {
     const url = new URL(value);
@@ -23,15 +43,15 @@ async function authRequest(method, body, fetcher) {
   } catch { throw new ApiError(503, 'AUTH_NETWORK', 'Cloudflare 暂未连通 DeepSeek 授权接口。'); }
   if (!response.headers.get('content-type')?.includes('application/json')) {
     const challenge = response.headers.get('x-amzn-waf-action');
-    if (challenge === 'captcha' || challenge === 'challenge') throw new ApiError(503, 'AUTH_CHALLENGE', `DeepSeek 要求验证 Cloudflare 出站请求（HTTP ${response.status}）。`);
-    throw new ApiError(503, 'AUTH_NOT_JSON', `DeepSeek 授权接口未返回 JSON（HTTP ${response.status}）。`);
+    if (challenge === 'captcha' || challenge === 'challenge') throw withUpstreamDiagnostic(new ApiError(503, 'AUTH_CHALLENGE', `DeepSeek 要求验证 Cloudflare 出站请求（HTTP ${response.status}）。`), response);
+    throw withUpstreamDiagnostic(new ApiError(503, 'AUTH_NOT_JSON', `DeepSeek 授权接口未返回 JSON（HTTP ${response.status}）。`), response);
   }
   try {
     const text = await response.text();
     if (text.length > 131072) throw new Error();
     data = JSON.parse(text);
-  } catch { throw new ApiError(502, 'AUTH_PROTOCOL', 'DeepSeek 授权响应格式不正确。'); }
-  if (!response.ok || data.code !== 0 || data.data?.biz_code !== 0) throw new ApiError(502, 'AUTH_REJECTED', 'DeepSeek 未完成这次授权，请重新连接。');
+  } catch { throw withUpstreamDiagnostic(new ApiError(502, 'AUTH_PROTOCOL', 'DeepSeek 授权响应格式不正确。'), response); }
+  if (!response.ok || data?.code !== 0 || data?.data?.biz_code !== 0) throw withUpstreamDiagnostic(new ApiError(502, 'AUTH_REJECTED', 'DeepSeek 未完成这次授权，请重新连接。'), response, data);
   return data.data.biz_data;
 }
 async function cancelFlow(flow, fetcher) {
@@ -73,6 +93,7 @@ export async function startAuthorization(env, identity, input, fetcher = fetch, 
     if (!saved.meta.changes) throw expired();
     return { id, expiresAt: new Date(expiresAt).toISOString(), authorizeUrl: flow.authorizeUrl };
   } catch (error) {
+    await recordFailure(env, identity, 'initialize', error);
     await cancelFlow(flow, fetcher); await closed(env, id);
     throw error;
   }
@@ -86,17 +107,20 @@ export async function completeAuthorization(env, identity, input, saveSession, f
   if (flow.kind !== 'dsh' || flow.state !== input.state) throw expired();
   const claim = await env.DB.prepare("UPDATE account_authorization SET state='saving' WHERE singleton=1 AND id=? AND state='open' AND expires_at>?").bind(row.id, now).run();
   if (!claim.meta.changes) throw busy();
-  let token;
+  let token, stage = 'exchange';
   try {
     const data = await authRequest('auth_exchange', { code: input.code, code_verifier: flow.verifier, redirect_uri: flow.redirectUri, device_id: flow.deviceId, device_model: 'feedfish-worker', os_version: 'Cloudflare Workers' }, fetcher);
     if (typeof data?.token !== 'string' || !/^[\x21-\x7e]{20,6000}$/.test(data.token)) throw new ApiError(502, 'AUTH_PROTOCOL', '官方授权响应格式不正确。');
     token = data.token;
     if (Date.now() >= row.expires_at) throw expired();
+    stage = 'account';
     return await saveSession({ dshToken: token, deviceId: '', deviceModel: '', shumeiDeviceId: '' });
   } catch (error) {
+    const failure = error instanceof ApiError ? error : new ApiError(503, 'AUTH_SAVE_FAILED', '账户连接未能保存，请管理员检查保险库和数据库状态。');
+    await recordFailure(env, identity, stage, failure);
     // Only the newly issued grant is used here; never read an existing session.
     if (token) await fetcher(`${origin}/auth-api/v0/users/logout`, { method: 'POST', headers: { ...platformClientHeaders, 'x-dsh-auth-token': token }, redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => {});
-    throw error;
+    throw failure;
   } finally { await closed(env, row.id); }
 }
 export async function cancelAuthorization(env, identity, fetcher = fetch, now = Date.now()) {

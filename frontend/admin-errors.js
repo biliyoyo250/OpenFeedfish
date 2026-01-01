@@ -1,0 +1,36 @@
+const messages = {
+  AUTH_EXPIRED: '本次授权已结束，请重新运行本机连接助手。',
+  AUTH_REJECTED: 'DeepSeek 未接受本次授权码兑换。',
+  AUTH_NETWORK: 'Cloudflare 未能连通 DeepSeek 授权接口。',
+  AUTH_CHALLENGE: 'DeepSeek 要求验证 Cloudflare 的出站请求。',
+  AUTH_NOT_JSON: 'DeepSeek 授权接口未返回 JSON，不能完成授权。',
+  AUTH_PROTOCOL: 'DeepSeek 授权响应不符合预期格式。',
+  AUTH_SAVE_FAILED: '授权连接未能保存，请检查后台存储。',
+  ACCOUNT_INVALID: '已兑换授权，但未能从账户资料中确认账户 ID。',
+  ACCOUNT_UNAVAILABLE: '账户资料未通过 CNY 充值资格核验。',
+  ACCOUNT_MISMATCH: '此登录账号与固定收款账户不一致，未替换已有会话。',
+  SESSION_EXPIRED: 'DeepSeek 拒绝了 Cloudflare 提交的账户令牌。',
+  VAULT_UNAVAILABLE: '账户保险库暂不可用，请检查后台配置。',
+  UPSTREAM_UNAVAILABLE: 'Cloudflare 未能连通 DeepSeek 账户接口。',
+  UPSTREAM_NOT_JSON: 'DeepSeek 账户接口未返回 JSON，账户核验未完成。',
+  UPSTREAM_PROTOCOL: 'DeepSeek 账户接口响应格式异常。',
+  UPSTREAM_HTTP: 'DeepSeek 账户接口返回了 HTTP 错误。',
+  UPSTREAM_REJECTED: 'DeepSeek 账户接口未接受本次请求。',
+  ACCESS_DENIED: '管理权限尚未就绪，请完成 Cloudflare Access 登录后重新加载页面。',
+  ADMIN_NETWORK: '管理请求未能完成，请检查网络和 Access 登录状态。',
+  ADMIN_RESPONSE: '管理入口未返回有效的接口响应。',
+};
+export function accountErrorMessage(error) {
+  const message = Object.hasOwn(messages, error?.code) ? messages[error.code] : '连接未完成，请查看后台诊断后重试。';
+  const diagnostic = error?.diagnostic;
+  const stages = { initialize: '授权初始化', exchange: '授权码兑换', account: '账户核验' };
+  const stage = Object.hasOwn(stages, diagnostic?.stage) ? stages[diagnostic.stage] : null;
+  const details = stage ? [stage] : [];
+  if (Number.isInteger(diagnostic?.upstreamStatus) && diagnostic.upstreamStatus >= 100 && diagnostic.upstreamStatus <= 599) details.push(`HTTP ${diagnostic.upstreamStatus}`);
+  for (const [key, label] of [['upstreamCode', 'code'], ['upstreamBizCode', 'biz_code']]) if (Number.isSafeInteger(diagnostic?.[key])) details.push(`${label} ${diagnostic[key]}`);
+  const checks = { identity: '账户 ID', currency: 'CNY 币种', banned: 'API 使用资格', payment: '充值权限' };
+  const check = Object.hasOwn(checks, diagnostic?.accountCheck) ? checks[diagnostic.accountCheck] : null;
+  if (check) details.push(check);
+  if (Object.hasOwn(messages, error?.code)) details.push(error.code);
+  return details.length ? `${message}（${details.join(' · ')}）` : message;
+}

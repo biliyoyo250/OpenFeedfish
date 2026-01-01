@@ -1,3 +1,4 @@
+import { accountErrorMessage } from './admin-errors.js';
 const element = (id) => document.getElementById(id);
 const fields = element('session-fields');
 const form = element('session-form');
@@ -99,21 +100,22 @@ async function request(path, body) {
   try {
     response = await fetch(path, options);
   } catch {
-    throw new Error('请求未能完成，请确认网络和管理入口的登录状态后重试。');
+    throw Object.assign(new Error('请求未能完成，请确认网络和管理入口的登录状态后重试。'), { code: 'ADMIN_NETWORK' });
   }
   if (response.status === 401 || response.status === 403) {
     lockAccess();
-    throw new Error('管理权限尚未就绪，请完成 Cloudflare Access 登录后重新加载页面。');
+    throw Object.assign(new Error('管理权限尚未就绪，请完成 Cloudflare Access 登录后重新加载页面。'), { code: 'ACCESS_DENIED' });
   }
   let data;
   try {
     data = await response.json();
   } catch {
-    throw new Error('未收到有效的管理响应，请检查管理入口配置后重试。');
+    throw Object.assign(new Error('未收到有效的管理响应，请检查管理入口配置后重试。'), { code: 'ADMIN_RESPONSE' });
   }
   if (!response.ok) {
     const error = new Error(typeof data?.error?.message === 'string' ? data.error.message : '操作未完成，请稍后重试。');
     error.code = data?.error?.code;
+    error.diagnostic = data?.error?.diagnostic;
     throw error;
   }
   return data;
@@ -238,10 +240,10 @@ async function mutate(path, body, successMessage, sensitive = false) {
     setNotice(successMessage);
   } catch (error) {
     // Credential import failures use our own text, never an upstream response that could echo input.
-    const sessionErrors = { AUTH_EXPIRED: '本次授权已结束，请重新运行本机连接助手。', AUTH_REJECTED: '官方未完成这次授权，请重新连接。', ACCOUNT_MISMATCH: '此登录账号与固定收款账户不一致，未替换已有会话。', SESSION_EXPIRED: '官方会话未通过后端核验，请重新连接。' };
-    const message = sensitive ? sessionErrors[error.code] || '会话验证未完成，请确认收款账户已经登录后重试。' : error.message;
+    const message = sensitive ? accountErrorMessage(error) : error.message;
     setNotice(saved ? `操作已完成，但刷新状态失败。${message}` : message, true);
   } finally {
+    if (!saved && path === '/api/admin/account/authorize/complete') await refresh().catch(() => {});
     busy = false;
     updateControls();
   }

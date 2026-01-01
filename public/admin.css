@@ -34,7 +34,7 @@ a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px soli
 .admin-header { display: flex; align-items: center; gap: 36px; padding: 30px 36px; }
 .admin-header a { color: var(--on-surface); text-decoration: none; white-space: nowrap; }
 .brand { display: inline-flex; align-items: center; gap: 8px; font-size: 24px; line-height: 1.25; font-weight: 700; }
-.brand svg { flex: none; }
+.brand svg, .brand img { flex: none; }
 .admin-nav, .admin-header-actions { display: flex; align-items: center; gap: 32px; }
 .admin-header-actions { margin-left: auto; }
 .admin-nav a, .admin-header-actions a { display: grid; align-items: center; min-height: 44px; font-size: 18px; }

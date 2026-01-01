@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 const base = 'http://127.0.0.1:8787';
 const get = async (path, options) => { const response = await fetch(base + path, options); return { response, data: await response.json() }; };
 const home = await fetch(base); assert.equal(home.status, 200); assert.match(await home.text(), /<title>喂鱼<\/title>/);
-for (const path of ['/styles.css', '/app.js', '/admin.js', '/admin.css', '/assets/DSniang1.png', '/assets/bubble-money1.gif', '/assets/Ya1.mp3', '/assets/Ya2.mp3', '/assets/wechat.svg', '/assets/alipay.svg']) assert.equal((await fetch(base + path)).status, 200, path);
+for (const path of ['/styles.css', '/app.js', '/admin.js', '/admin.css', '/assets/logo.png', '/assets/logo-mark.png', '/assets/bubble-money1.gif', '/assets/Ya1.mp3', '/assets/Ya2.mp3', '/assets/wechat.svg', '/assets/alipay.svg']) assert.equal((await fetch(base + path)).status, 200, path);
 const admin = await fetch(base + '/admin'); assert.equal(admin.status, 200); assert.equal(admin.headers.get('cache-control'), 'no-store');
 assert.match(await admin.text(), /Cloudflare Access/);
 const { data: config } = await get('/api/config'); assert.equal(config.demo, true); assert.equal(config.currency, 'CNY');

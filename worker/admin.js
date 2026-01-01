@@ -6,6 +6,7 @@ import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrows
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
 import { createAdminTestPayment } from './admin-payments.js';
+import { browserPaymentFetcher } from './browser-payments.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -47,7 +48,11 @@ export async function handleAdmin(request, env) {
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
   if (path === '/api/admin/account/test-payment') {
-    try { return json(await createAdminTestPayment(env, identity, body)); }
+    if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '付款码测试方式无效。');
+    try {
+      const fetcher = body.transport === 'browser' ? browserPaymentFetcher(env, await credentialsFor(env)) : fetch;
+      return json(await createAdminTestPayment(env, identity, body, fetcher));
+    }
     catch (error) {
       if (!(error instanceof ApiError)) throw error;
       const diagnostic = { stage: 'payment', code: error.code };

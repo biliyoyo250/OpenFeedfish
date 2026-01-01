@@ -239,6 +239,11 @@ export async function anonymousBrowserConnectivity(env) {
 // headers belong only to the fixed account fetch, never to page navigation or
 // third-party assets. No login, CAPTCHA solving, or payment happens here.
 export async function verifyAccountInBrowser(env, credentials, sdk) {
+  return withVerifiedAccountBrowser(env, credentials, undefined, sdk);
+}
+// Callers are server-side, fixed-operation adapters; this is never a remote
+// evaluation or arbitrary-URL API exposed to the management client.
+export async function withVerifiedAccountBrowser(env, credentials, operation, sdk) {
   if (!env.BROWSER || !env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'BROWSER_NOT_CONFIGURED', '请先配置云浏览器和固定账户。');
   if (typeof credentials.dshToken !== 'string' || !credentials.dshToken) throw new ApiError(409, 'BROWSER_GRANT_REQUIRED', '此检查需要已保存的官方授权。');
   sdk ||= await sdkFor();
@@ -251,6 +256,7 @@ export async function verifyAccountInBrowser(env, credentials, sdk) {
     const page = await browser.contexts()[0].newPage();
     await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 15000 });
     if (new URL(page.url()).origin !== origin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止传递账户凭证。');
+    const headers = { Accept: 'application/json', ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken, ...(credentials.deviceId ? { 'x-device-id': credentials.deviceId } : {}), ...(credentials.deviceModel ? { 'x-device-model': credentials.deviceModel } : {}) };
     const result = await page.evaluate(async (headers) => {
       if (location.origin !== 'https://platform.deepseek.com') return { wrongOrigin: true };
       const response = await fetch('https://platform.deepseek.com/auth-api/v0/users/current', { method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
@@ -264,7 +270,7 @@ export async function verifyAccountInBrowser(env, credentials, sdk) {
       const user = data?.data?.biz_data;
       if (data?.code === 0 && data?.data?.biz_code === 0 && user) result.user = { id: user.id, currency: user.currency, is_api_banned: user.is_api_banned, feature_gates: { PAYMENT: user.feature_gates?.PAYMENT } };
       return result;
-    }, { Accept: 'application/json', ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken, ...(credentials.deviceId ? { 'x-device-id': credentials.deviceId } : {}), ...(credentials.deviceModel ? { 'x-device-model': credentials.deviceModel } : {}) });
+    }, headers);
     const diagnostic = (error) => {
       if (Number.isInteger(result.httpStatus)) error.upstreamStatus = result.httpStatus;
       if (Number.isSafeInteger(result.code)) error.upstreamCode = result.code;
@@ -278,7 +284,7 @@ export async function verifyAccountInBrowser(env, credentials, sdk) {
     if (result.httpStatus < 200 || result.httpStatus >= 300 || result.code !== 0 || result.bizCode !== 0) throw diagnostic(new ApiError(503, 'UPSTREAM_REJECTED', 'DeepSeek 未接受云浏览器中的账户请求。'));
     const account = accountFromProfile(result.user);
     if (account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '授权账户与固定收款账户不一致。');
-    return account;
+    return operation ? await operation(page, headers, account) : account;
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(503, /429/.test(String(error?.message)) ? 'BROWSER_RATE_LIMIT' : 'BROWSER_UNAVAILABLE', '云浏览器账户核验暂不可用，请稍后再检查。');

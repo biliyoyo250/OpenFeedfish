@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { verifyAccountInBrowser } from '../worker/browser-login.js';
+import { browserPaymentFetcher } from '../worker/browser-payments.js';
 
 function browserSetup(response = () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY', email: 'private@example.test', token: 'must-not-return' } } })) {
   const counts = { acquisitions: 0, connections: 0, evaluations: 0, requests: 0, terminations: 0, disconnects: 0 };
@@ -21,14 +22,14 @@ function browserSetup(response = () => Response.json({ code: 0, data: { biz_code
         headers, location: { origin: new URL(url).origin }, AbortSignal,
         fetch: async (target, options) => {
           counts.requests++;
-          assert.equal(target, 'https://platform.deepseek.com/auth-api/v0/users/current');
-          assert.equal(options.method, 'GET');
+          assert.ok(['https://platform.deepseek.com/auth-api/v0/users/current', 'https://platform.deepseek.com/api/v1/payments'].includes(target));
+          assert.equal(options.method, target.endsWith('/current') ? 'GET' : 'POST');
           assert.equal(options.redirect, 'error');
           assert.equal(options.headers['x-dsh-auth-token'], credentials.dshToken);
           assert.equal(options.headers['x-device-id'], credentials.deviceId);
           assert.equal(options.headers.Cookie, undefined);
           assert.equal(options.headers.Authorization, undefined);
-          return response();
+          return response(target, options);
         },
       });
     },
@@ -54,6 +55,38 @@ test('browser account checks authenticate only the fixed read-only endpoint and 
   assert.equal(state.counts.acquisitions, 1);
   assert.equal(state.counts.terminations, 1);
   assert.equal(state.counts.disconnects, 1);
+});
+
+test('browser QR transport binds the live account, sends one fixed payment request and filters response fields', async () => {
+  let paymentCalls = 0;
+  const profile = () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY' } } });
+  const state = browserSetup((url, options) => {
+    if (url.endsWith('/current')) return profile();
+    paymentCalls++;
+    const body = JSON.parse(options.body);
+    assert.equal(body.order_info.amount, '1'); assert.equal(body.order_info.currency, 'CNY');
+    assert.equal(body.untrusted, undefined);
+    return Response.json({ code: 0, data: { biz_code: 0, secret: 'must-not-return', biz_data: { payment_order_id: 'test-order', amount: '1', currency: 'CNY', url: 'weixin://test', private: 'must-not-return' } } });
+  });
+  const body = { order_info: { amount: '1', currency: 'CNY', payment_method_type: 'CMB_UNIONPAY', fallback_method_type: 'WECHAT', request_id: crypto.randomUUID() }, untrusted: 'drop' };
+  const response = await browserPaymentFetcher(state.env, state.credentials, state.sdk)('https://platform.deepseek.com/api/v1/payments', { method: 'POST', body: JSON.stringify(body) });
+  const text = await response.text();
+  assert.equal(JSON.parse(text).data.biz_data.payment_order_id, 'test-order');
+  assert.ok(!text.includes('must-not-return'));
+  assert.equal(paymentCalls, 1); assert.equal(state.counts.acquisitions, 1); assert.equal(state.counts.terminations, 1);
+});
+
+test('browser QR failures distinguish an unattempted request from an uncertain creation without retrying', async () => {
+  const options = { method: 'POST', body: JSON.stringify({ order_info: { amount: '1', currency: 'CNY', payment_method_type: 'CMB_UNIONPAY', fallback_method_type: 'ALIPAY', request_id: crypto.randomUUID() } }) };
+  const wrong = browserSetup(() => Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'other', currency: 'CNY' } } }));
+  await assert.rejects(browserPaymentFetcher(wrong.env, wrong.credentials, wrong.sdk)('https://platform.deepseek.com/api/v1/payments', options), (error) => error.code === 'ACCOUNT_MISMATCH' && error.creationAttempted === false);
+  assert.equal(wrong.counts.requests, 1);
+  const invalid = browserSetup();
+  await assert.rejects(browserPaymentFetcher(invalid.env, invalid.credentials, invalid.sdk)('https://other.test/api/v1/payments', options), (error) => error.code === 'INVALID_REQUEST' && error.creationAttempted === false);
+  assert.equal(invalid.counts.acquisitions, 0);
+  const failed = browserSetup((url) => { if (url.endsWith('/current')) return Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY' } } }); throw new Error('private request failure'); });
+  await assert.rejects(browserPaymentFetcher(failed.env, failed.credentials, failed.sdk)('https://platform.deepseek.com/api/v1/payments', options), (error) => error.code === 'BROWSER_UNAVAILABLE' && error.creationAttempted !== false);
+  assert.equal(failed.counts.requests, 2); assert.equal(failed.counts.acquisitions, 1); assert.equal(failed.counts.terminations, 1);
 });
 
 test('browser checks reject challenges, expired grants, wrong accounts and unavailable CNY permissions', async () => {

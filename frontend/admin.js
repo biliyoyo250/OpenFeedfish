@@ -74,6 +74,7 @@ function updateControls() {
   checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
   checkButton.textContent = pending ? '重试账户核验' : '验证连接';
   browserCheckButton.disabled = !writable || Boolean(pending) || !session?.account?.configured;
+  element('browser-payment-mode').disabled = !writable || Boolean(pending) || !session?.account?.configured;
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
   for (const button of testButtons) button.disabled = !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
 }
@@ -301,11 +302,13 @@ browserCheckButton.addEventListener('click', () => {
 for (const button of testButtons) button.addEventListener('click', async () => {
   if (button.disabled || busy) return;
   const method = button.dataset.testMethod;
-  if (!testRequests.has(method)) testRequests.set(method, crypto.randomUUID());
+  const transport = element('browser-payment-mode').checked ? 'browser' : undefined;
+  const testKey = `${method}:${transport || 'worker'}`;
+  if (!testRequests.has(testKey)) testRequests.set(testKey, crypto.randomUUID());
   busy = true; updateControls(); setNotice('正在创建 1 CNY 测试账单…');
   element('payment-test-result').hidden = true;
   try {
-    const order = await request('/api/admin/account/test-payment', { paymentMethod: method, requestId: testRequests.get(method) });
+    const order = await request('/api/admin/account/test-payment', { paymentMethod: method, requestId: testRequests.get(testKey), ...(transport ? { transport } : {}) });
     if (!order.qrCode) throw new Error('这笔测试账单已关闭，请核对最近账单。');
     element('payment-test-qr').src = await QRCode.toDataURL(order.qrCode, { width: 440, margin: 3, errorCorrectionLevel: 'M' });
     element('payment-test-description').textContent = `1.00 CNY · ${method === 'wechat' ? '微信支付' : '支付宝'} · 有效至 ${dateLabel(order.expiresAt)}`;

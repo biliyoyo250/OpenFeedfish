@@ -39,6 +39,7 @@
         <p class="field-help">通过 Cloudflare 浏览器核验已保存的账户，不发起付款。</p>
         <button id="browser-check-button" class="button" type="button" disabled>云浏览器核验账户</button>
         <p class="field-help">创建 1 CNY 测试账单，记录到最近账单中。</p>
+        <label class="field-help browser-mode"><input id="browser-payment-mode" type="checkbox"> 使用 Cloudflare 浏览器取码</label>
         <div class="action-group"><button class="button" type="button" data-test-method="wechat" disabled>微信测试码</button><button class="button" type="button" data-test-method="alipay" disabled>支付宝测试码</button></div>
         <div id="payment-test-result" hidden><p id="payment-test-description" class="field-help"></p><img id="payment-test-qr" class="payment-test-qr" alt="1 CNY 测试账单付款码"><a id="payment-test-link" class="official-link" target="_blank" rel="noopener noreferrer" hidden>打开支付页 ↗</a></div>
       </details>

@@ -8,6 +8,13 @@ const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
 export async function handleAdmin(request, env) {
   const identity = await requireAdmin(request, env); const path = new URL(request.url).pathname;
+  // Serve the management bundle through the same service binding as its HTML.
+  // A content-addressed path cannot cache an older Pages bundle under a new URL.
+  if (/^\/admin\/(?:client\.[a-f0-9]{12}\.js|styles\.[a-f0-9]{12}\.css)$/.test(path) && request.method === 'GET') {
+    if (!env.ASSETS) throw new ApiError(503, 'ADMIN_UNAVAILABLE', '后台页面暂未就绪。');
+    const response = await env.ASSETS.fetch(request);
+    return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream', 'Cache-Control': 'private, max-age=31536000, immutable' } });
+  }
   if (path === '/admin' || path === '/admin/' || path === '/admin/index.html') {
     if (!env.ASSETS) throw new ApiError(503, 'ADMIN_UNAVAILABLE', '后台页面暂未就绪。');
     const url = new URL(request.url); url.pathname = '/admin/';

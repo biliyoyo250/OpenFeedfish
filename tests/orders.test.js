@@ -175,6 +175,7 @@ test('account and admin APIs reject missing SSO even with forged email headers',
   assert.equal(response.status, 503);
   const protectedPage = await worker.fetch(new Request('https://feedfish.example/admin/'), env);
   assert.equal(protectedPage.status, 503);
+  assert.equal((await worker.fetch(new Request('https://feedfish.example/admin/client.012345abcdef.js'), env)).status, 503);
 });
 test('Access JWT checks real signatures, audience, issuer, expiration and email allowlist', async () => {
   const { publicKey, privateKey } = await generateKeyPair('RS256');

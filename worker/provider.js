@@ -45,18 +45,31 @@ export function cookieHeader(cookies, path, now = Date.now()) {
       typeof cookie.value === 'string' && !/[^\x21-\x3A\x3C-\x7E]/.test(cookie.value);
   }).sort((a, b) => (b.path || '/').length - (a.path || '/').length).map(({ name, value }) => `${name}=${value}`).join('; ');
 }
-export async function inspectAccount(credentials, fetcher = fetch) {
-  const user = await upstream('/auth-api/v0/users/current', credentials, undefined, fetcher);
+export function accountFromProfile(user) {
   if (typeof user?.id !== 'string' || !user.id || user.id.length > 200) throw Object.assign(new ApiError(502, 'ACCOUNT_INVALID', '未能核对收款账号。'), { accountCheck: 'identity' });
   const check = user.currency !== 'CNY' ? 'currency' : user.is_api_banned === true ? 'banned' : user.feature_gates?.PAYMENT === false ? 'payment' : null;
   if (check) throw Object.assign(new ApiError(409, 'ACCOUNT_UNAVAILABLE', '该账号当前不能用于 CNY 充值。'), { accountCheck: check });
   return { id: user.id, currency: user.currency };
+}
+export async function inspectAccount(credentials, fetcher = fetch) {
+  return accountFromProfile(await upstream('/auth-api/v0/users/current', credentials, undefined, fetcher));
 }
 export async function verifyAccount(env, credentials, fetcher = fetch) {
   if (!env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先设置固定的 DEEPSEEK_ACCOUNT_ID。');
   const account = await inspectAccount(credentials, fetcher);
   if (account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '会话所属账号与固定收款账号不一致。');
   return account;
+}
+export async function verifyPaymentAccount(env, credentials, fetcher = fetch) {
+  if (!env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先固定收款账户。');
+  // This binding is added only when promoting a server-side PKCE exchange.
+  // The payment POST authenticates the grant and enforces current permissions.
+  if (credentials.dshToken && credentials.accountBinding?.kind === 'dsh-exchange') {
+    const account = accountFromProfile(credentials.issuedAccount);
+    if (account.id !== credentials.accountBinding.accountId || account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '授权账户与固定收款账户不一致。');
+    return account;
+  }
+  return verifyAccount(env, credentials, fetcher);
 }
 function responseFen(value) {
   if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value)) throw new ApiError(502, 'UPSTREAM_AMOUNT_INVALID', '付款金额未能核对，请联系收款人。');
@@ -65,7 +78,7 @@ function responseFen(value) {
 }
 export async function createPayment(env, input, fetcher = fetch) {
   let credentials;
-  try { credentials = await credentialsFor(env); await verifyAccount(env, credentials, fetcher); }
+  try { credentials = await credentialsFor(env); await verifyPaymentAccount(env, credentials, fetcher); }
   catch (error) { error.creationAttempted = false; throw error; }
   const data = await upstream('/api/v1/payments', credentials, { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: input.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY', amount: String(input.amountFen / 100), currency: 'CNY', request_id: input.requestId }, shumei_device_id: credentials.shumeiDeviceId || null }, fetcher);
   if (typeof data?.payment_order_id !== 'string' || !data.payment_order_id || data.payment_order_id.length > 200 || typeof data.url !== 'string' || data.url.length > 4096 || !/^(https:\/\/|weixin:\/\/|alipays:\/\/)/i.test(data.url)) throw new ApiError(502, 'UPSTREAM_ORDER_INVALID', '付款码未能核对，请联系收款人。');

@@ -1,7 +1,7 @@
 import { ApiError, assertOrigin, readJson, formatAmount } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
-import { inspectAccount, verifyAccount } from './provider.js';
+import { inspectAccount, verifyAccount, accountFromProfile } from './provider.js';
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus } from './browser-login.js';
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
@@ -97,8 +97,13 @@ export async function handleAdmin(request, env) {
 export async function importSession(env, credentials, actor, now = Date.now(), fetcher = fetch, pending) {
   const previous = await env.DB.prepare('SELECT account_id FROM account_session WHERE singleton=1').first();
   const expected = env.DEEPSEEK_ACCOUNT_ID || previous?.account_id;
+  let account;
+  if (pending && credentials.dshToken && credentials.issuedAccount?.id && ['CNY', 'USD'].includes(credentials.issuedAccount.currency)) {
+    account = accountFromProfile(credentials.issuedAccount);
+    if (expected && account.id !== expected) throw new ApiError(409, 'ACCOUNT_MISMATCH', '授权账户与固定收款账户不一致。');
+    credentials = { ...credentials, accountBinding: { kind: 'dsh-exchange', accountId: account.id } };
+  } else account = expected ? await verifyAccount({ ...env, DEEPSEEK_ACCOUNT_ID: expected }, credentials, fetcher) : await inspectAccount(credentials, fetcher);
   const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
-  const account = expected ? await verifyAccount({ ...env, DEEPSEEK_ACCOUNT_ID: expected }, credentials, fetcher) : await inspectAccount(credentials, fetcher);
   const time = Date.now();
   const insertion = pending ? 'SELECT 1,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM account_pending_authorization WHERE id=? AND owner_sub=? AND lease_until=? AND lease_until>? AND expires_at>?)' : 'VALUES (1,?,?,?,?,?,?)';
   const values = [account.id, sealed, 'connected', now, now, actor];

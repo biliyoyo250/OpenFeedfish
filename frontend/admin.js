@@ -23,7 +23,7 @@ const connectionInput = (() => {
 })();
 
 const accountStates = {
-  connected: ['已连接', 'positive', '会话已连接，赞助将充入指定的 DeepSeek 账户。'],
+  connected: ['身份已确认', 'positive', '固定账户身份已核对。收款仍需通过支付通道验证并启用。'],
   disabled: ['新订单已停止', 'neutral', '已停止接受新的赞助，已有账单仍由后端继续核对。'],
   unverified: ['待验证', 'warning', '已有会话，但连接尚未验证。请验证连接或更新登录会话。'],
   not_configured: ['未配置', 'neutral', '还没有可用的登录会话，请在下方导入。'],
@@ -139,7 +139,7 @@ function renderSession(data) {
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
   element('admin-identity').textContent = data.demo ? '本地后台演示' : `管理员：${data.email || '已验证身份'}`;
   const staged = !data.expectedAccountId && data.account.accountId && !data.demo;
-  const state = data.pendingAuthorization ? ['待核验', 'warning', '官方授权已收到，账户资料尚未核验。暂存会话不会用于创建付款账单。'] : staged ? ['待固定账户', 'warning', '会话已验证并加密保存。请将此账户 ID 固定到部署配置后再开放收款。'] : accountStates[data.account.status] || accountStates.unverified;
+  const state = data.pendingAuthorization ? ['待核验', 'warning', '官方授权已收到，账户资料尚未核验。暂存会话不会用于创建付款账单。'] : staged ? ['待固定账户', 'warning', '账户身份已确认，凭证已加密保存。固定此账户 ID 后仍需验证支付通道；收款保持关闭。'] : accountStates[data.account.status] || accountStates.unverified;
   element('account-status').textContent = state[0];
   element('account-status').className = `status-badge ${state[1]}`;
   element('account-description').textContent = data.demo ? '以下为本地演示信息，不代表真实 DeepSeek 账户连接状态。' : state[2];

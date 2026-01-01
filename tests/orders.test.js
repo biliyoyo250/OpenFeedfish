@@ -220,6 +220,23 @@ test('pending promotion rolls back the trusted vault if removing the candidate f
   env.DB.prepare = prepare;
 });
 
+test('a private exchange profile can bind its grant while manual input cannot forge an issuer binding', async () => {
+  const { env, db, owner, fetcher } = authorizationSetup();
+  const credentials = { dshToken: 'private-issued-token', issuedAccount: { id: 'fixed-issuer-account', currency: 'CNY' } };
+  await assert.rejects(importSession(env, credentials, 'owner', Date.now(), async () => new Response('blocked', { status: 403 })), { code: 'UPSTREAM_NOT_JSON' });
+  const id = await stagePendingAuthorization(env, owner, credentials, fetcher);
+  await verifyPendingAuthorization(env, owner, id, (value, pending) => importSession(env, value, 'owner', Date.now(), () => assert.fail('exchange supplied the identity'), pending), fetcher);
+  env.DEEPSEEK_ACCOUNT_ID = 'fixed-issuer-account';
+  const stored = await credentialsFor(env);
+  assert.deepEqual(stored.accountBinding, { kind: 'dsh-exchange', accountId: 'fixed-issuer-account' });
+  const calls = [];
+  await createPayment(env, { amountFen: 100, paymentMethod: 'wechat', requestId: crypto.randomUUID() }, async (url) => { calls.push(url); return Response.json({ code: 0, data: { biz_code: 0, biz_data: { payment_order_id: 'real-test-order', amount: '1', currency: 'CNY', url: 'weixin://wxpay/test-only' } } }); });
+  assert.deepEqual(calls, ['https://platform.deepseek.com/api/v1/payments']);
+  env.DEEPSEEK_ACCOUNT_ID = 'other-account';
+  await assert.rejects(createPayment(env, { amountFen: 100, paymentMethod: 'wechat' }, () => assert.fail('wrong account')), { code: 'ACCOUNT_UNAVAILABLE' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 0);
+});
+
 test('a canceled pending grant cannot be promoted by a late account response', async () => {
   const { env, db, owner, fetcher } = authorizationSetup();
   const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-pending-token' }, fetcher);

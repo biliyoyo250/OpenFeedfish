@@ -13,7 +13,8 @@ const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
 async function paymentFailure(env, identity, event, error) {
   if (!(error instanceof ApiError)) throw error;
-  const diagnostic = { stage: 'payment', code: error.code };
+  const diagnostic = { stage: ['limits', 'acquire', 'connect', 'context', 'navigate', 'prepare', 'view', 'persist'].includes(error.browserStage) ? `browser_${error.browserStage}` : 'payment', code: error.code };
+  if (Number.isInteger(error.cloudflareStatus) && error.cloudflareStatus >= 100 && error.cloudflareStatus <= 599) diagnostic.cloudflareStatus = error.cloudflareStatus;
   for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error[key])) diagnostic[key] = error[key];
   if (['captcha', 'challenge'].includes(error.upstreamChallenge)) diagnostic.upstreamChallenge = error.upstreamChallenge;
   await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`${event}:${JSON.stringify(diagnostic)}`, identity.email, Date.now()).run().catch(() => {});
@@ -60,7 +61,10 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
-  if (path === '/api/admin/account/payment-challenge/start') return json(await startPaymentChallenge(env, identity));
+  if (path === '/api/admin/account/payment-challenge/start') {
+    try { return json(await startPaymentChallenge(env, identity)); }
+    catch (error) { return paymentFailure(env, identity, 'payment_challenge_start_failed', error instanceof ApiError ? error : new ApiError(503, 'LOGIN_UNAVAILABLE', 'Cloudflare 验证窗口暂不可用，请稍后重试。')); }
+  }
   if (path === '/api/admin/account/payment-challenge/cancel') { await cancelPaymentChallenge(env, identity, body.id); return json({ ok: true }); }
   if (path === '/api/admin/account/payment-challenge/complete') {
     try { return json(await completePaymentChallenge(env, identity, body.id)); }

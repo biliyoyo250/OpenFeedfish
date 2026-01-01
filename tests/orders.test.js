@@ -421,9 +421,26 @@ test('interactive task connection failure closes only its already acquired insta
   const { env, db, sdk, counts } = loginSetup();
   const originalConnect = sdk.connect; let connections = 0;
   sdk.connect = async endpoint => { if (++connections === 1) throw new Error('private connection failure'); return originalConnect(endpoint); };
-  await assert.rejects(startBrowserLogin(env, { sub: 'owner' }, sdk, Date.now(), { purpose: 'payment-captcha' }), { code: 'LOGIN_UNAVAILABLE' });
+  await assert.rejects(startBrowserLogin(env, { sub: 'owner' }, sdk, Date.now(), { purpose: 'payment-captcha' }), { code: 'LOGIN_UNAVAILABLE', browserStage: 'connect' });
   assert.equal(counts.acquisitions, 1); assert.equal(connections, 2); assert.equal(counts.terminations, 1);
   assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'closed');
+});
+test('browser creation distinguishes explicit daily quota from an unexplained 429 without leaking SDK text or retrying', async () => {
+  for (const [text, code] of [
+    ['Unable to create new browser: code: 429: message: Browser time limit exceeded for today', 'BROWSER_QUOTA_EXCEEDED'],
+    ['Unable to create new browser: code: 429: message: unknown restriction', 'BROWSER_RATE_LIMIT'],
+    ['Unable to create new browser: code: 503: message: unavailable', 'LOGIN_UNAVAILABLE'],
+  ]) {
+    const { env, db, sdk, counts } = loginSetup();
+    sdk.acquire = async () => { counts.acquisitions++; throw new Error(`${text} private-capability-url private-session`); };
+    await assert.rejects(startBrowserLogin(env, { sub: 'owner' }, sdk, Date.now(), { purpose: 'payment-captcha' }), error => {
+      assert.equal(error.code, code); assert.equal(error.browserStage, 'acquire'); assert.equal(error.cloudflareStatus, code === 'LOGIN_UNAVAILABLE' ? 503 : 429);
+      assert.doesNotMatch(`${error.message}${JSON.stringify(error)}`, /private-capability|private-session|unknown restriction/);
+      if (code === 'BROWSER_RATE_LIMIT') assert.doesNotMatch(error.message, /额度用尽/);
+      return true;
+    });
+    assert.equal(counts.acquisitions, 1); assert.equal(counts.terminations, 0); assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'closed');
+  }
 });
 test('CNY money uses integer fen and rejects coercion/rounding/overflow', () => {
   assert.equal(parseAmount('1.01'), 101); assert.equal(parseAmount('100000.00'), 10000000); assert.equal(formatAmount(1001), '10.01');

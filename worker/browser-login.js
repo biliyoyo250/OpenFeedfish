@@ -54,6 +54,20 @@ async function connect(env, sdk, sessionId) {
   endpoint.searchParams.set('persistent', 'true');
   return sdk.connect(endpoint);
 }
+function browserFailure(error, stage) {
+  // Inspect SDK text only in memory. Never return its URLs, session IDs,
+  // connection capabilities or raw response body to the management client.
+  const message = String(error?.message || '');
+  const status = Number(message.match(/\b(?:code|status|HTTP)\s*[:=]?\s*(\d{3})\b/i)?.[1]);
+  let failure = error instanceof ApiError ? error : new ApiError(503, 'LOGIN_UNAVAILABLE', 'Cloudflare 验证窗口暂不可用，请稍后重试。');
+  if (!(error instanceof ApiError) && stage === 'acquire') {
+    if (/Browser time limit exceeded for today/i.test(message)) failure = new ApiError(503, 'BROWSER_QUOTA_EXCEEDED', 'Cloudflare 已明确报告今日浏览器时长额度用尽，请待额度恢复后再试。');
+    else if (status === 429) failure = new ApiError(503, 'BROWSER_RATE_LIMIT', 'Cloudflare 返回 HTTP 429，暂时无法创建验证窗口；具体限制原因尚未确认。');
+  }
+  failure.browserStage = stage;
+  if (!(error instanceof ApiError) && status >= 100 && status <= 599) failure.cloudflareStatus = status;
+  return failure;
+}
 export async function startBrowserLogin(env, identity, sdk, now = Date.now(), task = {}) {
   available(env);
   sdk ||= await sdkFor();
@@ -80,22 +94,30 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now(), ta
   // still compete for one conditional database claim.
   await cleanupBrowserLogin(env, sdk, now);
   if (task.checkLimits) {
-    const limits = await sdk.limits(env.BROWSER);
-    if (!(limits.allowedBrowserAcquisitions > 0) || limits.timeUntilNextAllowedBrowserAcquisition > 0 || limits.activeSessions?.length >= limits.maxConcurrentSessions) throw new ApiError(503, 'BROWSER_BUSY', '云浏览器资源暂不可用，请稍后再打开。');
+    try {
+      const limits = await sdk.limits(env.BROWSER);
+      if (!(limits.allowedBrowserAcquisitions > 0) || limits.timeUntilNextAllowedBrowserAcquisition > 0 || limits.activeSessions?.length >= limits.maxConcurrentSessions) throw new ApiError(503, 'BROWSER_BUSY', '云浏览器资源暂不可用，请稍后再打开。');
+    } catch (error) { throw browserFailure(error, 'limits'); }
   }
   const id = crypto.randomUUID(); const expiresAt = now + lifetime;
   const claim = await env.DB.prepare("INSERT INTO account_login (singleton,id,owner_sub,state,created_at,expires_at) VALUES (1,?,?,'starting',?,?) ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,owner_sub=excluded.owner_sub,state=excluded.state,sealed_session=NULL,created_at=excluded.created_at,expires_at=excluded.expires_at WHERE account_login.state='closed'").bind(id, identity.sub, now, expiresAt).run();
   if (!claim.meta.changes) throw new ApiError(409, 'LOGIN_BUSY', '登录窗口正在处理，请稍后重试。');
-  let browser, sessionId;
+  let browser, sessionId, stage = 'acquire';
   try {
     ({ sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: lifetime, recording: false }));
+    stage = 'connect';
     browser = await connect(env, sdk, sessionId);
+    stage = 'context';
     const context = browser.contexts()[0];
     if (!context) throw new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试。');
     const page = await context.newPage();
+    stage = 'navigate';
     await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    stage = 'prepare';
     if (task.prepare) await task.prepare(page);
+    stage = 'view';
     const liveViewUrl = await viewFor(page);
+    stage = 'persist';
     const sealed = await seal({ ...task.data, sessionId, purpose: task.purpose || 'login' }, env.ACCOUNT_ENCRYPTION_KEY);
     const saved = await env.DB.prepare("UPDATE account_login SET state='open',sealed_session=? WHERE singleton=1 AND id=? AND state='starting' AND expires_at>?").bind(sealed, id, Date.now()).run();
     if (!saved.meta.changes) throw missing();
@@ -106,7 +128,7 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now(), ta
     }
     if (browser) await terminate(browser);
     await closed(env, id);
-    throw error instanceof ApiError ? error : new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试；也可检查 Cloudflare 浏览器额度。');
+    throw browserFailure(error, stage);
   } finally { if (browser) await browser.close().catch(() => {}); }
 }
 

@@ -329,7 +329,12 @@ challengeStart.addEventListener('click', async () => {
     element('challenge-state').hidden = false;
     element('challenge-state').textContent = `请打开验证窗口并手动完成验证码，有效至 ${dateLabel(result.expiresAt)}。`;
     setNotice('官方验证码窗口已准备好，请点击“打开验证窗口”。');
-  } catch (error) { setNotice(error.message, true); }
+  } catch (error) {
+    const stages = { browser_limits: '资源检查', browser_acquire: '创建浏览器', browser_connect: '连接浏览器', browser_context: '初始化窗口', browser_navigate: '打开官方页', browser_prepare: '准备验证码', browser_view: '生成查看入口', browser_persist: '保存临时会话' };
+    const stage = stages[error.diagnostic?.stage];
+    const status = Number.isInteger(error.diagnostic?.cloudflareStatus) ? ` · HTTP ${error.diagnostic.cloudflareStatus}` : '';
+    setNotice(`${error.message}${stage ? `（${stage}${status} · ${error.code}）` : ''}`, true);
+  }
   finally { busy = false; updateControls(); }
 });
 challengeCancel.addEventListener('click', async () => {

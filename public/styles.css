@@ -36,8 +36,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .hero { text-align: center; margin-bottom: 38px; }
 .character-controls { position: relative; width: 128px; margin: 0 auto; }
 .character-button { display: grid; place-items: center; width: 128px; height: 128px; padding: 4px; border: 0; border-radius: 32px; background: transparent; transform-origin: center; }
-.character-button:hover { background: var(--surface); }
-.character-button:active { background: var(--surface-hover); }
+.character-button:focus-visible { outline: none; }
+.character-button:focus-visible #fish-image { filter: drop-shadow(0 0 4px var(--primary)); }
 #fish-image { display: block; width: 120px; height: 120px; object-fit: contain; transform: scaleX(-1); transform-origin: center; user-select: none; pointer-events: none; }
 .icon-button { position: absolute; top: 74px; left: calc(100% + 12px); display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; color: var(--on-surface-variant); background: transparent; }
 .icon-button:hover, .icon-button[aria-pressed="true"] { background: var(--surface); }

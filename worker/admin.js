@@ -7,9 +7,18 @@ import { authorizationState, startAuthorization, completeAuthorization, cancelAu
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
 import { createAdminTestPayment } from './admin-payments.js';
 import { browserPaymentFetcher } from './browser-payments.js';
+import { startPaymentChallenge, paymentChallengeView, completePaymentChallenge, cancelPaymentChallenge } from './payment-challenge.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
+async function paymentFailure(env, identity, event, error) {
+  if (!(error instanceof ApiError)) throw error;
+  const diagnostic = { stage: 'payment', code: error.code };
+  for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error[key])) diagnostic[key] = error[key];
+  if (['captcha', 'challenge'].includes(error.upstreamChallenge)) diagnostic.upstreamChallenge = error.upstreamChallenge;
+  await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`${event}:${JSON.stringify(diagnostic)}`, identity.email, Date.now()).run().catch(() => {});
+  return json({ error: { code: error.code, message: error.message, diagnostic } }, error.status);
+}
 export async function handleAdmin(request, env) {
   const identity = await requireAdmin(request, env); const path = new URL(request.url).pathname;
   // Serve the management bundle through the same service binding as its HTML.
@@ -28,6 +37,10 @@ export async function handleAdmin(request, env) {
   if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
   if (path === '/api/admin/account/authorize/diagnostics' && request.method === 'GET' && !identity.demo) return json({ failure: await lastAuthorizationFailure(env) });
+  if (path === '/api/admin/account/payment-challenge/view' && request.method === 'GET' && !identity.demo) {
+    const url = await paymentChallengeView(env, identity, new URL(request.url).searchParams.get('id'));
+    return new Response(null, { status: 302, headers: { ...headers, Location: url } });
+  }
   if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) {
     const mode = new URL(request.url).searchParams.get('mode');
     if (mode === 'resources') return json(await browserResourceStatus(env));
@@ -47,6 +60,12 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  if (path === '/api/admin/account/payment-challenge/start') return json(await startPaymentChallenge(env, identity));
+  if (path === '/api/admin/account/payment-challenge/cancel') { await cancelPaymentChallenge(env, identity, body.id); return json({ ok: true }); }
+  if (path === '/api/admin/account/payment-challenge/complete') {
+    try { return json(await completePaymentChallenge(env, identity, body.id)); }
+    catch (error) { return paymentFailure(env, identity, 'payment_challenge_failed', error instanceof ApiError ? error : new ApiError(503, 'PAYMENT_CHALLENGE_UNAVAILABLE', '官方验证或测试取码暂时未完成，请检查后台记录。')); }
+  }
   if (path === '/api/admin/account/test-payment' || path === '/api/admin/account/check-payment') {
     const checking = path.endsWith('/check-payment');
     if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '付款码测试方式无效。');
@@ -64,12 +83,7 @@ export async function handleAdmin(request, env) {
       return json(await createAdminTestPayment(env, identity, body, fetcher));
     }
     catch (error) {
-      if (!(error instanceof ApiError)) throw error;
-      const diagnostic = { stage: 'payment', code: error.code };
-      for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error[key])) diagnostic[key] = error[key];
-      if (['captcha', 'challenge'].includes(error.upstreamChallenge)) diagnostic.upstreamChallenge = error.upstreamChallenge;
-      await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`${checking ? 'payment_check_failed' : 'payment_test_failed'}:${JSON.stringify(diagnostic)}`, identity.email, Date.now()).run().catch(() => {});
-      return json({ error: { code: error.code, message: error.message, diagnostic } }, error.status);
+      return paymentFailure(env, identity, checking ? 'payment_check_failed' : 'payment_test_failed', error);
     }
   }
   if (path === '/api/admin/account/authorize/start') return json(await startAuthorization(env, identity, body));

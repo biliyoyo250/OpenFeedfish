@@ -54,7 +54,7 @@ async function connect(env, sdk, sessionId) {
   endpoint.searchParams.set('persistent', 'true');
   return sdk.connect(endpoint);
 }
-export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
+export async function startBrowserLogin(env, identity, sdk, now = Date.now(), task = {}) {
   available(env);
   sdk ||= await sdkFor();
   const previous = await rowFor(env);
@@ -64,11 +64,13 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
     let browser;
     try {
       const saved = await unseal(previous.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
+      if ((saved.purpose || 'login') !== (task.purpose || 'login')) throw new ApiError(409, 'LOGIN_BUSY', '已有其他官方窗口正在使用。');
       browser = await connect(env, sdk, saved.sessionId);
       const page = await pageFor(browser);
       if (!page) throw missing();
       return { id: previous.id, expiresAt: new Date(previous.expires_at).toISOString(), liveViewUrl: await viewFor(page) };
     } catch (error) {
+      if (error.code === 'LOGIN_BUSY') throw error;
       if (browser) await terminate(browser);
       await closed(env, previous.id);
       throw error instanceof ApiError ? error : missing();
@@ -77,27 +79,67 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
   // Close expired instances before replacing the singleton; concurrent starts
   // still compete for one conditional database claim.
   await cleanupBrowserLogin(env, sdk, now);
+  if (task.checkLimits) {
+    const limits = await sdk.limits(env.BROWSER);
+    if (!(limits.allowedBrowserAcquisitions > 0) || limits.timeUntilNextAllowedBrowserAcquisition > 0 || limits.activeSessions?.length >= limits.maxConcurrentSessions) throw new ApiError(503, 'BROWSER_BUSY', '云浏览器资源暂不可用，请稍后再打开。');
+  }
   const id = crypto.randomUUID(); const expiresAt = now + lifetime;
   const claim = await env.DB.prepare("INSERT INTO account_login (singleton,id,owner_sub,state,created_at,expires_at) VALUES (1,?,?,'starting',?,?) ON CONFLICT(singleton) DO UPDATE SET id=excluded.id,owner_sub=excluded.owner_sub,state=excluded.state,sealed_session=NULL,created_at=excluded.created_at,expires_at=excluded.expires_at WHERE account_login.state='closed'").bind(id, identity.sub, now, expiresAt).run();
   if (!claim.meta.changes) throw new ApiError(409, 'LOGIN_BUSY', '登录窗口正在处理，请稍后重试。');
-  let browser;
+  let browser, sessionId;
   try {
-    const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: lifetime, recording: false });
+    ({ sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: lifetime, recording: false }));
     browser = await connect(env, sdk, sessionId);
     const context = browser.contexts()[0];
     if (!context) throw new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试。');
     const page = await context.newPage();
     await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    if (task.prepare) await task.prepare(page);
     const liveViewUrl = await viewFor(page);
-    const sealed = await seal({ sessionId }, env.ACCOUNT_ENCRYPTION_KEY);
+    const sealed = await seal({ ...task.data, sessionId, purpose: task.purpose || 'login' }, env.ACCOUNT_ENCRYPTION_KEY);
     const saved = await env.DB.prepare("UPDATE account_login SET state='open',sealed_session=? WHERE singleton=1 AND id=? AND state='starting' AND expires_at>?").bind(sealed, id, Date.now()).run();
     if (!saved.meta.changes) throw missing();
     return { id, expiresAt: new Date(expiresAt).toISOString(), liveViewUrl };
   } catch (error) {
+    if (!browser && sessionId) {
+      try { browser = await connect(env, sdk, sessionId); } catch { /* Idle expiry is the final cleanup fuse. */ }
+    }
     if (browser) await terminate(browser);
     await closed(env, id);
     throw error instanceof ApiError ? error : new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试；也可检查 Cloudflare 浏览器额度。');
   } finally { if (browser) await browser.close().catch(() => {}); }
+}
+
+export async function browserTaskView(env, identity, id, purpose, sdk, now = Date.now()) {
+  available(env); const row = await rowFor(env); owned(row, identity, id, now);
+  if (row.state !== 'open') throw new ApiError(409, 'LOGIN_BUSY', '官方窗口正在处理，请稍后再查看。');
+  const saved = await unseal(row.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
+  if (saved.purpose !== purpose) throw missing();
+  sdk ||= await sdkFor(); let browser;
+  try { browser = await connect(env, sdk, saved.sessionId); const page = await pageFor(browser); if (!page) throw missing(); return await viewFor(page); }
+  finally { if (browser) await browser.close().catch(() => {}); }
+}
+
+export async function completeBrowserTask(env, identity, id, purpose, ready, operation, sdk, now = Date.now()) {
+  available(env); const row = await rowFor(env); owned(row, identity, id, now);
+  if (row.state !== 'open') throw new ApiError(409, 'LOGIN_BUSY', '官方窗口正在处理，请稍后重试。');
+  const saved = await unseal(row.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
+  if (saved.purpose !== purpose) throw missing();
+  const claim = await env.DB.prepare("UPDATE account_login SET state='saving' WHERE singleton=1 AND id=? AND owner_sub=? AND state='open' AND expires_at>?").bind(id, identity.sub, now).run();
+  if (!claim.meta.changes) throw missing();
+  let browser, consumed = false;
+  try {
+    sdk ||= await sdkFor(); browser = await connect(env, sdk, saved.sessionId);
+    const page = await pageFor(browser); if (!page) throw missing();
+    if (!await ready(page)) throw new ApiError(409, 'LOGIN_PENDING', '请先在官方窗口完成验证码，再返回继续。');
+    owned(await rowFor(env), identity, id, Date.now());
+    consumed = true;
+    return await operation(browser, page, saved);
+  } finally {
+    if (consumed) { if (browser) await terminate(browser); await closed(env, id); }
+    else await env.DB.prepare("UPDATE account_login SET state='open' WHERE singleton=1 AND id=? AND state='saving'").bind(id).run();
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 export function credentialsFromBrowser(headers, cookies) {
@@ -170,9 +212,10 @@ export async function completeBrowserLogin(env, identity, id, saveSession, sdk, 
     if (browser) await browser.close().catch(() => {});
   }
 }
-export async function cancelBrowserLogin(env, identity, id, sdk, now = Date.now()) {
+export async function cancelBrowserLogin(env, identity, id, sdk, now = Date.now(), purpose) {
   available(env);
   const row = await rowFor(env); owned(row, identity, id, now);
+  if (purpose && (await unseal(row.sealed_session, env.ACCOUNT_ENCRYPTION_KEY)).purpose !== purpose) throw missing();
   if (row.state === 'saving' || row.state === 'starting') throw new ApiError(409, 'LOGIN_BUSY', '登录窗口正在处理，请稍后重试。');
   const claim = await env.DB.prepare("UPDATE account_login SET state='closed' WHERE singleton=1 AND id=? AND state='open'").bind(id).run();
   if (!claim.meta.changes) throw new ApiError(409, 'LOGIN_BUSY', '登录窗口正在处理，请稍后重试。');
@@ -255,38 +298,7 @@ export async function withVerifiedAccountBrowser(env, credentials, operation, sd
     if (!(limits.allowedBrowserAcquisitions > 0) || limits.timeUntilNextAllowedBrowserAcquisition > 0 || limits.activeSessions?.length >= limits.maxConcurrentSessions) throw new ApiError(503, 'BROWSER_BUSY', '云浏览器资源暂不可用，请稍后再核验。');
     ({ sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 10000, recording: false }));
     browser = await connect(env, sdk, sessionId);
-    const page = await browser.contexts()[0].newPage();
-    await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    if (new URL(page.url()).origin !== origin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止传递账户凭证。');
-    const headers = { Accept: 'application/json', ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken, ...(credentials.deviceId ? { 'x-device-id': credentials.deviceId } : {}), ...(credentials.deviceModel ? { 'x-device-model': credentials.deviceModel } : {}) };
-    const result = await page.evaluate(async (headers) => {
-      if (location.origin !== 'https://platform.deepseek.com') return { wrongOrigin: true };
-      const response = await fetch('https://platform.deepseek.com/auth-api/v0/users/current', { method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
-      const isJson = response.headers.get('content-type')?.includes('application/json') || false;
-      const challenge = response.headers.get('x-amzn-waf-action') || response.headers.get('cf-mitigated');
-      const result = { httpStatus: response.status, isJson, ...(challenge === 'challenge' || challenge === 'captcha' ? { challenge } : {}) };
-      if (!isJson) return result;
-      const data = await response.json();
-      if (Number.isSafeInteger(data?.code)) result.code = data.code;
-      if (Number.isSafeInteger(data?.data?.biz_code)) result.bizCode = data.data.biz_code;
-      const user = data?.data?.biz_data;
-      if (data?.code === 0 && data?.data?.biz_code === 0 && user) result.user = { id: user.id, currency: user.currency, is_api_banned: user.is_api_banned, feature_gates: { PAYMENT: user.feature_gates?.PAYMENT } };
-      return result;
-    }, headers);
-    const diagnostic = (error) => {
-      if (Number.isInteger(result.httpStatus)) error.upstreamStatus = result.httpStatus;
-      if (Number.isSafeInteger(result.code)) error.upstreamCode = result.code;
-      if (Number.isSafeInteger(result.bizCode)) error.upstreamBizCode = result.bizCode;
-      if (['captcha', 'challenge'].includes(result.challenge)) error.upstreamChallenge = result.challenge;
-      return error;
-    };
-    if (result.wrongOrigin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止账户请求。');
-    if (result.httpStatus === 401 || result.code === 40002 || result.code === 40003) throw diagnostic(new ApiError(503, 'SESSION_EXPIRED', 'DeepSeek 未接受保存的账户授权。'));
-    if (!result.isJson) throw diagnostic(new ApiError(503, 'UPSTREAM_NOT_JSON', '云浏览器未取得 JSON；请管理员检查官方页面是否要求人机验证。'));
-    if (result.httpStatus < 200 || result.httpStatus >= 300 || result.code !== 0 || result.bizCode !== 0) throw diagnostic(new ApiError(503, 'UPSTREAM_REJECTED', 'DeepSeek 未接受云浏览器中的账户请求。'));
-    const account = accountFromProfile(result.user);
-    if (account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '授权账户与固定收款账户不一致。');
-    return operation ? await operation(page, headers, account) : account;
+    return await runInAccountBrowser(env, credentials, browser, operation);
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(503, /429/.test(String(error?.message)) ? 'BROWSER_RATE_LIMIT' : 'BROWSER_UNAVAILABLE', '云浏览器账户核验暂不可用，请稍后再检查。');
@@ -296,4 +308,40 @@ export async function withVerifiedAccountBrowser(env, credentials, operation, sd
     if (!browser && sessionId) { try { browser = await connect(env, sdk, sessionId); } catch { /* Backend idle expiry remains the final fuse. */ } }
     if (browser) await terminate(browser);
   }
+}
+
+export async function runInAccountBrowser(env, credentials, browser, operation, existingPage) {
+  if (!env.DEEPSEEK_ACCOUNT_ID || !credentials.dshToken) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '固定账户尚未配置。');
+  const page = existingPage || await browser.contexts()[0].newPage();
+  if (!existingPage) await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  if (new URL(page.url()).origin !== origin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止传递账户凭证。');
+  const headers = { Accept: 'application/json', ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken, ...(credentials.deviceId ? { 'x-device-id': credentials.deviceId } : {}), ...(credentials.deviceModel ? { 'x-device-model': credentials.deviceModel } : {}) };
+  const result = await page.evaluate(async (headers) => {
+    if (location.origin !== 'https://platform.deepseek.com') return { wrongOrigin: true };
+    const response = await fetch('https://platform.deepseek.com/auth-api/v0/users/current', { method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+    const isJson = response.headers.get('content-type')?.includes('application/json') || false;
+    const challenge = response.headers.get('x-amzn-waf-action') || response.headers.get('cf-mitigated');
+    const result = { httpStatus: response.status, isJson, ...(challenge === 'challenge' || challenge === 'captcha' ? { challenge } : {}) };
+    if (!isJson) return result;
+    const data = await response.json();
+    if (Number.isSafeInteger(data?.code)) result.code = data.code;
+    if (Number.isSafeInteger(data?.data?.biz_code)) result.bizCode = data.data.biz_code;
+    const user = data?.data?.biz_data;
+    if (data?.code === 0 && data?.data?.biz_code === 0 && user) result.user = { id: user.id, currency: user.currency, is_api_banned: user.is_api_banned, feature_gates: { PAYMENT: user.feature_gates?.PAYMENT } };
+    return result;
+  }, headers);
+  const diagnostic = (error) => {
+    if (Number.isInteger(result.httpStatus)) error.upstreamStatus = result.httpStatus;
+    if (Number.isSafeInteger(result.code)) error.upstreamCode = result.code;
+    if (Number.isSafeInteger(result.bizCode)) error.upstreamBizCode = result.bizCode;
+    if (['captcha', 'challenge'].includes(result.challenge)) error.upstreamChallenge = result.challenge;
+    return error;
+  };
+  if (result.wrongOrigin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止账户请求。');
+  if (result.httpStatus === 401 || result.code === 40002 || result.code === 40003) throw diagnostic(new ApiError(503, 'SESSION_EXPIRED', 'DeepSeek 未接受保存的账户授权。'));
+  if (!result.isJson) throw diagnostic(new ApiError(503, 'UPSTREAM_NOT_JSON', '云浏览器未取得 JSON；请管理员检查官方页面是否要求人机验证。'));
+  if (result.httpStatus < 200 || result.httpStatus >= 300 || result.code !== 0 || result.bizCode !== 0) throw diagnostic(new ApiError(503, 'UPSTREAM_REJECTED', 'DeepSeek 未接受云浏览器中的账户请求。'));
+  const account = accountFromProfile(result.user);
+  if (account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '授权账户与固定收款账户不一致。');
+  return operation ? await operation(page, headers, account) : account;
 }

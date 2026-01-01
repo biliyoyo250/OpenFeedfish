@@ -5,7 +5,7 @@ import { paymentVerification } from './payment-verification.js';
 
 // Scoped admin transport: either a one-yuan QR test or polling one existing
 // order. A capture scope cannot create orders or query any other order.
-export function browserPaymentFetcher(env, credentials, sdk, providerOrderId) {
+export function browserPaymentFetcher(env, credentials, sdk, providerOrderId, runner = withVerifiedAccountBrowser) {
   if (providerOrderId !== undefined && (typeof providerOrderId !== 'string' || !/^[A-Za-z0-9_-]{6,200}$/.test(providerOrderId))) throw new ApiError(400, 'INVALID_ORDER_ID', '请输入有效的 DeepSeek 订单号。');
   const capturePath = providerOrderId === undefined ? null : `/api/v1/payments/${encodeURIComponent(providerOrderId)}/capture`;
   return async (url, options) => {
@@ -17,7 +17,7 @@ export function browserPaymentFetcher(env, credentials, sdk, providerOrderId) {
         ? url === `https://platform.deepseek.com${capturePath}` && options?.method === 'POST' && options.body === undefined
         : url === 'https://platform.deepseek.com/api/v1/payments' && options?.method === 'POST' && info?.amount === '1' && info.currency === 'CNY' && info.payment_method_type === 'CMB_UNIONPAY' && ['WECHAT', 'ALIPAY'].includes(info.fallback_method_type) && /^[0-9a-f-]{36}$/i.test(info.request_id || '');
       if (!permitted) throw new ApiError(400, 'INVALID_REQUEST', '请求不符合本次固定支付测试或查单范围。');
-      return await withVerifiedAccountBrowser(env, credentials, async (page, headers) => {
+      return await runner(env, credentials, async (page, headers) => {
         if (new URL(page.url()).origin !== 'https://platform.deepseek.com') throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止付款码请求。');
         const deviceId = capturePath ? null : await paymentDeviceId(page);
         if (!capturePath) await paymentVerification(page);

@@ -15,7 +15,7 @@ import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
 import { applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
 import { importSession } from '../worker/admin.js';
-import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics, browserResourceStatus } from '../worker/browser-login.js';
+import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics, browserResourceStatus, browserTaskView, completeBrowserTask } from '../worker/browser-login.js';
 import { cookieHeader } from '../worker/provider.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 
@@ -387,6 +387,43 @@ test('resource checks do not launch browsers or expose session capabilities or S
   sdk.limits = async () => { throw new Error('private-error'); };
   assert.deepEqual(await browserResourceStatus({ BROWSER: {} }, sdk), { mode: 'resources', configured: true, code: 'BROWSER_RESOURCES_UNAVAILABLE' });
   assert.deepEqual(await browserResourceStatus({}, sdk), { mode: 'resources', configured: false });
+});
+
+test('interactive browser tasks bind purpose, owner and expiry and terminate after one completion', async () => {
+  const { env, db, sdk, counts } = loginSetup(); const owner = { sub: 'owner' }, other = { sub: 'other' };
+  sdk.limits = async () => ({ allowedBrowserAcquisitions: 1, activeSessions: [], maxConcurrentSessions: 3, timeUntilNextAllowedBrowserAcquisition: 0 });
+  let prepared = 0, completed = 0;
+  const task = { purpose: 'payment-captcha', checkLimits: true, data: { requestId: 'fixed-task-request' }, prepare: async () => { prepared++; } };
+  const attempt = await startBrowserLogin(env, owner, sdk, Date.now(), task);
+  await assert.rejects(startBrowserLogin(env, owner, sdk), { code: 'LOGIN_BUSY' });
+  assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'open'); assert.equal(counts.terminations, 0);
+  await assert.rejects(browserTaskView(env, other, attempt.id, 'payment-captcha', sdk), { code: 'LOGIN_EXPIRED' });
+  await assert.rejects(browserTaskView(env, owner, attempt.id, 'login', sdk), { code: 'LOGIN_EXPIRED' });
+  const resumed = await startBrowserLogin(env, owner, sdk, Date.now(), task);
+  assert.equal(resumed.id, attempt.id); assert.equal(prepared, 1); assert.equal(counts.acquisitions, 1);
+  await assert.rejects(completeBrowserTask(env, owner, attempt.id, 'payment-captcha', async () => false, () => assert.fail('must wait for human'), sdk), { code: 'LOGIN_PENDING' });
+  assert.equal(counts.terminations, 0); assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'open');
+  const result = await completeBrowserTask(env, owner, attempt.id, 'payment-captcha', async () => true, async (_browser, _page, saved) => { completed++; assert.equal(saved.requestId, 'fixed-task-request'); return { ok: true }; }, sdk);
+  assert.deepEqual(result, { ok: true }); assert.equal(completed, 1); assert.equal(counts.terminations, 1);
+  assert.equal(db.prepare('SELECT sealed_session FROM account_login').get().sealed_session, null);
+  await assert.rejects(completeBrowserTask(env, owner, attempt.id, 'payment-captcha', async () => true, () => assert.fail('must not repeat'), sdk), { code: 'LOGIN_EXPIRED' });
+});
+
+test('interactive browser preparation failures close the instance and resource denial acquires none', async () => {
+  const state = loginSetup(); state.sdk.limits = async () => ({ allowedBrowserAcquisitions: 1 });
+  await assert.rejects(startBrowserLogin(state.env, { sub: 'owner' }, state.sdk, Date.now(), { purpose: 'payment-captcha', checkLimits: true, prepare: async () => { throw new Error('private preparation failure'); } }));
+  assert.equal(state.counts.terminations, 1); assert.equal(state.db.prepare('SELECT state FROM account_login').get().state, 'closed');
+  const denied = loginSetup(); denied.sdk.limits = async () => ({ allowedBrowserAcquisitions: 0 });
+  await assert.rejects(startBrowserLogin(denied.env, { sub: 'owner' }, denied.sdk, Date.now(), { purpose: 'payment-captcha', checkLimits: true }), { code: 'BROWSER_BUSY' });
+  assert.equal(denied.counts.acquisitions, 0);
+});
+test('interactive task connection failure closes only its already acquired instance', async () => {
+  const { env, db, sdk, counts } = loginSetup();
+  const originalConnect = sdk.connect; let connections = 0;
+  sdk.connect = async endpoint => { if (++connections === 1) throw new Error('private connection failure'); return originalConnect(endpoint); };
+  await assert.rejects(startBrowserLogin(env, { sub: 'owner' }, sdk, Date.now(), { purpose: 'payment-captcha' }), { code: 'LOGIN_UNAVAILABLE' });
+  assert.equal(counts.acquisitions, 1); assert.equal(connections, 2); assert.equal(counts.terminations, 1);
+  assert.equal(db.prepare('SELECT state FROM account_login').get().state, 'closed');
 });
 test('CNY money uses integer fen and rejects coercion/rounding/overflow', () => {
   assert.equal(parseAmount('1.01'), 101); assert.equal(parseAmount('100000.00'), 10000000); assert.equal(formatAmount(1001), '10.01');

@@ -46,6 +46,28 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     const largerReceived = parsed(await next(agentMessages, (v) => parsed(v)?.id === largerJob.id)); assert.equal(largerReceived.amountFen, 3700);
     agent.send(JSON.stringify({ type: 'payment-job-result', id: largerJob.id, result: { ok: true, creationAttempted: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { payment_order_id: 'synthetic-public', amount: '37', currency: 'CNY', url: 'https://payments.example.invalid/code' } } } } }));
     assert.equal((await (await largerRequest).json()).ok, true);
+    assert.equal((await (await req('/select-recipient', {})).json()).error, 'AGENT_UPDATE_REQUIRED');
+    assert.equal((await req('/clear-recipient', {})).status, 200);
+    assert.equal((await (await req('/status')).json()).receivingAccountId, null);
+    assert.equal((await (await req('/execute', largerJob)).json()).code, 'ACCOUNT_NOT_CONFIGURED');
+
+    agent.send(JSON.stringify({ type: 'capabilities', paymentProtocol: 3 })); await next(agentMessages, (v) => parsed(v)?.paymentProtocol === 3);
+    const select = req('/select-recipient', {});
+    const discover = parsed(await next(agentMessages, (v) => parsed(v)?.type === 'payment-job'));
+    assert.equal(discover.operation, 'profile'); assert.equal(discover.accountId, null);
+    assert.equal((await req('/clear-recipient', {})).status, 409);
+    agent.send(JSON.stringify({ type: 'payment-job-result', id: discover.id, result: { ok: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { id: 'new-recipient', currency: 'CNY' } } } } }));
+    assert.equal((await (await select).json()).receivingAccountId, 'new-recipient');
+    assert.equal((await (await req('/status')).json()).receivingAccountId, 'new-recipient');
+    assert.equal((await (await req('/execute', largerJob)).json()).code, 'ACCOUNT_MISMATCH');
+
+    const capture = { ...rpcJob, id: crypto.randomUUID(), operation: 'capture', providerOrderId: 'synthetic-public' };
+    const historical = req('/execute', capture);
+    const historicalJob = parsed(await next(agentMessages, (v) => parsed(v)?.id === capture.id));
+    assert.equal(historicalJob.accountId, 'fixed');
+    agent.send(JSON.stringify({ type: 'payment-job-result', id: capture.id, result: { ok: false, code: 'ACCOUNT_MISMATCH' } }));
+    assert.equal((await (await historical).json()).code, 'ACCOUNT_MISMATCH');
+
     const adminHeaders = { Upgrade: 'websocket', 'X-Agent-Admin-Sub': 'approved-admin', 'X-Agent-Admin-Expires': String(Date.now() + 600000) };
     assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Expires': String(Date.now() - 1) })).status, 403);
     const viewer = (await req('/viewer', undefined, adminHeaders)).webSocket; assert.ok(viewer); const viewerMessages = collect(viewer);

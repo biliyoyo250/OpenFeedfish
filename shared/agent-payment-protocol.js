@@ -1,14 +1,15 @@
-import { validCommandId } from './browser-agent-protocol.js';
-export const PAYMENT_PROTOCOL = 2;
+import { validAccountId, validCommandId } from './browser-agent-protocol.js';
+export const PAYMENT_PROTOCOL = 3;
 export const PAYMENT_JOB_TTL = 55000;
 export const PAYMENT_RPC_TIMEOUT = 65000;
-export const maxPaymentAmount = (protocol) => protocol === 1 ? 100 : protocol === PAYMENT_PROTOCOL ? 10000000 : 0;
+export const maxPaymentAmount = (protocol) => protocol === 1 ? 100 : [2, PAYMENT_PROTOCOL].includes(protocol) ? 10000000 : 0;
 const orderId = (value) => typeof value === 'string' && /^[A-Za-z0-9_-]{6,200}$/.test(value);
-const errors = new Set(['LOGIN_REQUIRED', 'ACCOUNT_MISMATCH', 'ACCOUNT_INELIGIBLE', 'AUTH_TOKEN_MISSING', 'SESSION_EXPIRED', 'UPSTREAM_NOT_JSON', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_REDIRECT', 'PAYMENT_DEVICE_UNAVAILABLE', 'PAYMENT_VERIFICATION_REQUIRED', 'JOB_EXPIRED', 'AGENT_OFFLINE', 'AGENT_BUSY', 'AGENT_PROTOCOL', 'AGENT_TIMEOUT', 'AGENT_UPDATE_REQUIRED']);
+const errors = new Set(['LOGIN_REQUIRED', 'ACCOUNT_NOT_CONFIGURED', 'ACCOUNT_MISMATCH', 'ACCOUNT_INELIGIBLE', 'AUTH_TOKEN_MISSING', 'SESSION_EXPIRED', 'UPSTREAM_NOT_JSON', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_REDIRECT', 'PAYMENT_DEVICE_UNAVAILABLE', 'PAYMENT_VERIFICATION_REQUIRED', 'JOB_EXPIRED', 'AGENT_OFFLINE', 'AGENT_BUSY', 'AGENT_PROTOCOL', 'AGENT_TIMEOUT', 'AGENT_UPDATE_REQUIRED']);
 export function paymentJob(value, accountId) {
-  if (!value || value.type !== 'payment-job' || !validCommandId(value.id) || typeof accountId !== 'string' || !accountId || accountId.length > 200 || value.accountId !== accountId) throw new Error('INVALID_PAYMENT_JOB');
+  if (!value || value.type !== 'payment-job' || !validCommandId(value.id) || value.accountId !== accountId) throw new Error('INVALID_PAYMENT_JOB');
   const base = { type: 'payment-job', id: value.id, accountId, operation: value.operation, ttlMs: PAYMENT_JOB_TTL };
-  if (value.operation === 'profile') return base;
+  if (value.operation === 'profile' && (accountId === null || validAccountId(accountId))) return base;
+  if (!validAccountId(accountId)) throw new Error('INVALID_PAYMENT_JOB');
   if (value.operation === 'create' && validCommandId(value.requestId) && ['wechat', 'alipay'].includes(value.paymentMethod) && Number.isSafeInteger(value.amountFen) && value.amountFen >= 100 && value.amountFen <= maxPaymentAmount(PAYMENT_PROTOCOL) && value.amountFen % 100 === 0) return { ...base, requestId: value.requestId, paymentMethod: value.paymentMethod, amountFen: value.amountFen };
   if (['capture', 'invoice'].includes(value.operation) && orderId(value.providerOrderId)) return { ...base, providerOrderId: value.providerOrderId };
   throw new Error('INVALID_PAYMENT_JOB');
@@ -30,8 +31,9 @@ export function paymentJobResult(job, value) {
   const source = value.data?.data?.biz_data;
   let data = null;
   if (source && job.operation === 'profile') {
-    if (source.id !== job.accountId || source.currency !== 'CNY') return { ok: false, code: source.id !== job.accountId ? 'ACCOUNT_MISMATCH' : 'ACCOUNT_INELIGIBLE', creationAttempted: false };
-    data = { id: job.accountId, currency: 'CNY' };
+    if (!validAccountId(source.id) || (job.accountId !== null && source.id !== job.accountId)) return { ok: false, code: 'ACCOUNT_MISMATCH', creationAttempted: false };
+    if (source.currency !== 'CNY') return { ok: false, code: 'ACCOUNT_INELIGIBLE', creationAttempted: false };
+    data = { id: source.id, currency: 'CNY' };
   } else if (source && job.operation === 'create') {
     data = { payment_order_id: text(source.payment_order_id, 200), amount: money(source.amount), url: text(source.url, 4096), ...(source.currency !== undefined ? { currency: currency(source.currency) } : {}), ...(typeof source.fallback === 'boolean' ? { fallback: source.fallback } : {}) };
   } else if (source?.order && job.operation === 'capture') {

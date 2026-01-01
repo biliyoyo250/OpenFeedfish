@@ -1,4 +1,5 @@
 import { paymentJob, paymentJobResult, PAYMENT_JOB_TTL } from '../shared/agent-payment-protocol.js';
+import { accountResult } from '../shared/browser-agent-protocol.js';
 import { paymentDeviceId } from '../worker/payment-device.js';
 import { paymentVerification } from '../worker/payment-verification.js';
 const origin = 'https://platform.deepseek.com';
@@ -11,10 +12,9 @@ export async function executePaymentJob(page, value, { accountId, checkAccount, 
     assertActive();
     if (new URL(page.url()).origin !== origin) throw Object.assign(new Error(), { code: 'LOGIN_REQUIRED' });
     if (job.operation === 'create' && new URL(page.url()).pathname !== '/top_up') await page.goto(`${origin}/top_up`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    const account = await checkAccount();
+    const account = accountResult(await checkAccount(), accountId);
     if (!account.ok) return paymentJobResult(job, { ok: false, code: account.code, httpStatus: account.httpStatus, creationAttempted: false });
-    if (account.accountId !== accountId || account.currency !== 'CNY' || account.eligible !== true) return paymentJobResult(job, { ok: false, code: account.accountId !== accountId ? 'ACCOUNT_MISMATCH' : 'ACCOUNT_INELIGIBLE', creationAttempted: false });
-    if (job.operation === 'profile') return paymentJobResult(job, { ok: true, httpStatus: 200, isJson: true, creationAttempted: false, data: { code: 0, data: { biz_code: 0, biz_data: { id: accountId, currency: 'CNY' } } } });
+    if (job.operation === 'profile') return paymentJobResult(job, { ok: true, httpStatus: 200, isJson: true, creationAttempted: false, data: { code: 0, data: { biz_code: 0, biz_data: { id: account.accountId, currency: 'CNY' } } } });
     const deviceId = job.operation === 'create' ? await device(page) : null;
     if (job.operation === 'create') await verification(page);
     assertActive(11000);

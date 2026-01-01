@@ -100,6 +100,7 @@ export function mapPaymentResult(data, row) {
 }
 export async function queryPayment(env, row, fetcher = fetch) {
   const agent = row.provider_transport === 'agent';
+  if (row.provider_account_id) env = { ...env, DEEPSEEK_ACCOUNT_ID: row.provider_account_id };
   if (agent && fetcher === fetch) fetcher = agentPaymentFetcher(env, { providerOrderId: row.provider_order_id });
   const credentials = agent ? {} : await credentialsFor(env, true);
   const data = await upstream(`/api/v1/payments/${encodeURIComponent(row.provider_order_id)}/capture`, credentials, undefined, fetcher);

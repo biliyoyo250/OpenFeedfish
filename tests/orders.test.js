@@ -29,6 +29,7 @@ function setup({ migrateAdminTests = true } = {}) {
   db.exec(readFileSync(new URL('../migrations/0006_pending_authorization.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0007_agent_transport.sql', import.meta.url), 'utf8'));
   if (migrateAdminTests) db.exec(readFileSync(new URL('../migrations/0008_admin_test_orders.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0009_order_receiving_account.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
@@ -39,15 +40,15 @@ function setup({ migrateAdminTests = true } = {}) {
 function publicAgentSetup(t) {
   const state = setup(); const { env } = state;
   Object.assign(env, { LOCAL_DEMO: 'false', DEEPSEEK_ACCOUNT_ID: 'fixed', PAYMENTS_ENABLED: 'true', PUBLIC_PAYMENT_TRANSPORT: 'agent', PUBLIC_PAYMENT_METHODS: 'alipay', ORDER_TOKEN_SECRET: 's'.repeat(40), TURNSTILE_SITE_KEY: 'fixture-site', TURNSTILE_SECRET_KEY: 'private-fixture-secret' });
-  const control = { online: true, protocol: 2, jobs: [], failure: null, paid: false, amount: '37' };
+  const control = { online: true, protocol: 2, receivingAccountId: 'fixed', jobs: [], failure: null, paid: false, amount: '37' };
   env.AGENT_RELAY = { idFromName: () => 'fixed-account-browser', get: () => ({ fetch: async (request) => {
     const path = new URL(request.url).pathname;
-    if (path === '/status') return Response.json({ configured: true, online: control.online, paymentProtocol: control.protocol });
+    if (path === '/status') return Response.json({ configured: true, online: control.online, paymentProtocol: control.protocol, receivingAccountId: control.receivingAccountId });
     if (path === '/notify-order') return Response.json({ ok: true });
     assert.equal(path, '/execute'); const job = await request.json(); control.jobs.push(job);
     if (job.operation === 'create' && control.failure === 'unsent') return Response.json({ ok: false, code: 'AGENT_BUSY', creationAttempted: false });
     if (job.operation === 'create' && control.failure === 'uncertain') return Response.json({ ok: true, httpStatus: 202, isJson: false, challenge: 'challenge', creationAttempted: true });
-    const data = job.operation === 'profile' ? { id: 'fixed', currency: 'CNY' }
+    const data = job.operation === 'profile' ? { id: job.accountId, currency: 'CNY' }
       : job.operation === 'create' ? { payment_order_id: 'synthetic-public-order', amount: String(job.amountFen / 100), currency: 'CNY', url: 'https://payments.example.invalid/synthetic-qr', fallback: true }
         : job.operation === 'capture' ? { order: { id: 'synthetic-public-order', amount: control.amount, currency: 'CNY', status: control.paid ? 'SUCCESS' : 'CREATED' } }
           : { invoices: { payment_orders: [{ payment_order_id: 'synthetic-public-order', amount: control.amount, currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date().toISOString() }] } };
@@ -598,6 +599,37 @@ test('public retries reuse an unsent reservation but an uncertain creation canno
   assert.equal((await create({}, anotherKey)).status, 503); const before = control.jobs.length;
   const uncertain = await create({}, anotherKey); assert.equal(uncertain.status, 409); assert.equal(control.jobs.length, before);
   assert.equal(db.prepare("SELECT count(*) AS n FROM orders WHERE status='unknown'").get().n, 1);
+});
+
+test('public checkout pauses without a recipient and never retries an order with a different recipient', async (t) => {
+  const { env, db, request, create, control } = publicAgentSetup(t);
+  delete env.DEEPSEEK_ACCOUNT_ID;
+  control.protocol = 3;
+  control.receivingAccountId = null;
+  assert.equal((await (await request('/api/config')).json()).paymentsAvailable, false);
+  assert.equal((await create()).status, 503);
+  assert.equal(control.jobs.length, 0);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM orders').get().n, 0);
+
+  const key = crypto.randomUUID();
+  control.receivingAccountId = 'first-recipient';
+  control.failure = 'unsent';
+  assert.equal((await create({}, key)).status, 503);
+  assert.equal(db.prepare('SELECT provider_account_id FROM orders').get().provider_account_id, 'first-recipient');
+
+  control.receivingAccountId = 'second-recipient';
+  control.failure = null;
+  const before = control.jobs.length;
+  const repeated = await (await create({}, key)).json();
+  assert.equal(repeated.status, 'failed');
+  assert.equal(control.jobs.length, before);
+
+  const response = await create();
+  assert.equal(response.status, 201);
+  const order = await response.json();
+  assert.equal(db.prepare('SELECT provider_account_id FROM orders WHERE id=?').get(order.id).provider_account_id, 'second-recipient');
+  assert.equal(control.jobs.at(-1).accountId, 'second-recipient');
+  assert.equal('receivingAccountId' in (await (await request('/api/config')).json()), false);
 });
 
 test('admin test migration preserves old agent tests and excludes newer public agent bills from test restoration', async () => {

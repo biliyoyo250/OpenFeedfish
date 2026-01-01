@@ -1,6 +1,6 @@
 import { VIEWPORT, validPairCode, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
 import { createAgentStatusWatcher } from './admin-agent-status.js';
-import { maxPaymentAmount } from '../shared/agent-payment-protocol.js';
+import { maxPaymentAmount, PAYMENT_PROTOCOL } from '../shared/agent-payment-protocol.js';
 import QRCode from 'qrcode';
 
 export function initBrowserAgent() {
@@ -8,8 +8,14 @@ export function initBrowserAgent() {
   const canvas = el('agent-screen'); const ctx = canvas.getContext('2d');
   let socket; let online = false; let paired = false; let bitmapBusy = false; let dragging = false; let moveAt = 0;
   let paymentReady = false; let paymentBusy = false; let testOrder = null; let paymentRender = 0; let renderedQr = null;
+  let receivingAccountId = null; let canSelectRecipient = false;
   const testIds = new Map(); const testButtons = [...document.querySelectorAll('[data-agent-test-method]')];
-  const updatePaymentControls = () => { for (const button of testButtons) button.disabled = !online || !paymentReady || paymentBusy; el('agent-test-check').disabled = !online || !paymentReady || paymentBusy || !testOrder?.id; };
+  const updatePaymentControls = () => {
+    for (const button of testButtons) button.disabled = !online || !paymentReady || !receivingAccountId || paymentBusy;
+    el('agent-test-check').disabled = !online || !paymentReady || paymentBusy || !testOrder?.id;
+    el('agent-select-recipient').disabled = !online || !canSelectRecipient || paymentBusy;
+    el('agent-clear-recipient').disabled = !receivingAccountId || paymentBusy;
+  };
   const values = new URLSearchParams(location.hash.slice(1));
   if (values.has('agent_pair')) {
     const code = values.get('agent_pair');
@@ -26,7 +32,7 @@ export function initBrowserAgent() {
     const result = await response.json();
     if (!response.ok) {
       const code = typeof result.error === 'string' ? result.error : result.error?.code;
-      const message = ({ PAIRING_EXPIRED: '配对码已失效，请在服务端重新发起。', DEVICE_ALREADY_PAIRED: '已有已配对设备，请先确认是否更换。', ACCESS_DENIED: '请重新通过 Access 登录。', RATE_LIMITED: '操作过于频繁，请稍后重试。' })[code] || result.error?.message || '操作未完成，请检查 Access 登录和服务状态。';
+      const message = ({ PAIRING_EXPIRED: '配对码已失效，请在服务端重新发起。', DEVICE_ALREADY_PAIRED: '已有已配对设备，请先确认是否更换。', ACCESS_DENIED: '请重新通过 Access 登录。', RATE_LIMITED: '操作过于频繁，请稍后重试。', AGENT_BUSY: '浏览器正在处理付款或账户核验，请稍后重试。', AGENT_OFFLINE: '请先启动自托管浏览器。', AGENT_UPDATE_REQUIRED: '请重启本机 browser-agent 加载更新。', LOGIN_REQUIRED: '请在实时窗口中登录 DeepSeek。', SESSION_EXPIRED: '请在实时窗口中重新登录 DeepSeek。', ACCOUNT_INELIGIBLE: '当前账号不符合 CNY 充值要求。', ACCOUNT_CHECK_FAILED: '未能核验当前登录账号，请检查实时窗口。' })[code] || result.error?.message || '操作未完成，请检查 Access 登录和服务状态。';
       const error = new Error(message); error.code = code; error.diagnostic = result.error?.diagnostic; throw error;
     }
     return result;
@@ -37,18 +43,40 @@ export function initBrowserAgent() {
     onStatus: (data) => {
       const previousOnline = online; const previousPaired = paired;
       online = data.online === true; paired = data.configured === true;
+      const nextRecipient = data.receivingAccountId || null;
+      if (nextRecipient !== receivingAccountId) testIds.clear();
+      receivingAccountId = nextRecipient;
+      canSelectRecipient = data.paymentProtocol === PAYMENT_PROTOCOL;
       paymentReady = maxPaymentAmount(data.paymentProtocol) > 0; updatePaymentControls();
+      el('agent-recipient-status').textContent = receivingAccountId ? '收款账号已启用。' : '尚未启用收款账号。';
       el('agent-status').textContent = online ? `${data.name} · 在线` : paired ? `${data.name} · 离线` : '未配对';
       el('agent-open').disabled = !online || [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket?.readyState);
       el('agent-revoke').disabled = !paired;
       el('agent-approve').disabled = !!data.demo;
-      if (online && !previousOnline) notice(paymentReady ? '浏览器已在线，可核验账户并生成 1 CNY 未付款测试码。' : '浏览器已在线。取码功能需要重启本机 browser-agent 加载更新；无需重新配对或登录。');
+      if (online && !previousOnline) {
+        if (receivingAccountId && paymentReady) notice('浏览器已在线，可以生成 1 CNY 未付款测试码。');
+        else if (canSelectRecipient) notice('登录 DeepSeek 后，点击“启用当前登录账号”开始收款。');
+        else notice('请重启本机 browser-agent 加载收款账号设置。');
+      }
       else if (paired && !online && (!previousPaired || previousOnline)) notice('已配对，正在等待浏览器启动；上线后页面会自动更新。');
     },
     onError: (error) => notice(error.message),
     onTimeout: () => notice('尚未收到服务连接，请检查终端日志；点击“刷新”可重新等待。'),
   });
   const refresh = () => statusWatcher.start();
+  async function changeRecipient(action) {
+    if (paymentBusy) return;
+    paymentBusy = true;
+    updatePaymentControls();
+    try {
+      await api('recipient', { action });
+      await refresh();
+      notice(action === 'select' ? '已核验并启用当前登录账号。' : '收款账号已解绑，已暂停生成新付款码。');
+    } catch (error) { notice(error.message); }
+    finally { paymentBusy = false; updatePaymentControls(); }
+  }
+  el('agent-select-recipient').addEventListener('click', () => void changeRecipient('select'));
+  el('agent-clear-recipient').addEventListener('click', () => void changeRecipient('clear'));
   async function showTestOrder(order) {
     const render = ++paymentRender; const needsQr = order.qrCode && renderedQr !== order.qrCode;
     testOrder = order;
@@ -154,8 +182,8 @@ export function initBrowserAgent() {
       if (data.type === 'presence' && !data.online) { clearScreen(); notice('浏览器服务已离线，正在等待重连。'); void refresh(); }
       if (data.type === 'error') notice(data.code === 'AGENT_BUSY' ? '浏览器正在取码或查单，请等待当前任务结束。' : '操作未发送：服务离线或请求无效。');
       if (data.type === 'result' && data.command === 'check-account') {
-        const messages = { LOGIN_REQUIRED: '请先在画面中登录 DeepSeek。', ACCOUNT_MISMATCH: '登录账户与固定收款账户不一致。', ACCOUNT_INELIGIBLE: '账户币种或资格不符合要求。', SESSION_EXPIRED: '登录已失效，请在画面中重新登录。', AUTH_TOKEN_MISSING: '官方接口未识别登录 Token。', UPSTREAM_NOT_JSON: '本机账户接口仍未返回 JSON。', UPSTREAM_UNAVAILABLE: '本机暂未连通账户接口。' };
-        notice(data.result.ok ? '本机浏览器已核对固定账户和 CNY。' : `${messages[data.result.code] || '账户核验未完成。'}${data.result.httpStatus ? ` HTTP ${data.result.httpStatus}` : ''}`);
+        const messages = { LOGIN_REQUIRED: '请先在画面中登录 DeepSeek。', ACCOUNT_MISMATCH: '未能核验当前登录账号，请重启执行端后重试。', ACCOUNT_INELIGIBLE: '账户币种或资格不符合要求。', SESSION_EXPIRED: '登录已失效，请在画面中重新登录。', AUTH_TOKEN_MISSING: '官方接口未识别登录 Token。', UPSTREAM_NOT_JSON: '本机账户接口仍未返回 JSON。', UPSTREAM_UNAVAILABLE: '本机暂未连通账户接口。' };
+        notice(data.result.ok ? '当前登录账号符合 CNY 充值要求。' : `${messages[data.result.code] || '账户核验未完成。'}${data.result.httpStatus ? ` HTTP ${data.result.httpStatus}` : ''}`);
       }
     });
     socket.addEventListener('close', (event) => {

@@ -95,9 +95,10 @@ test('agent-marked ledger rows query the same host and use only matched official
   const operations = []; const now = Date.now(); const paidAt = new Date(now - 5000).toISOString();
   const env = rpcEnv((job) => {
     operations.push(job.operation);
+    assert.equal(job.accountId, 'original-recipient');
     return envelope(job.operation === 'capture' ? { order: { id: 'synthetic-order', status: 'SUCCESS', amount: '1', currency: 'CNY' } } : { invoices: { payment_orders: [{ payment_order_id: 'synthetic-order', amount: '1', currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: paidAt, private: 'never-forward' }] } });
   });
-  const result = await queryPayment(env, { provider_transport: 'agent', provider_order_id: 'synthetic-order', amount_fen: 100, created_at: now - 60000, paid_at: null });
+  const result = await queryPayment(env, { provider_transport: 'agent', provider_account_id: 'original-recipient', provider_order_id: 'synthetic-order', amount_fen: 100, created_at: now - 60000, paid_at: null });
   assert.deepEqual(operations, ['capture', 'invoice']);
   assert.deepEqual(result, { status: 'paid', providerStatus: 'SUCCESS', paidAt: Date.parse(paidAt) });
 });
@@ -106,7 +107,7 @@ test('relay RPC times out without replay and reports dispatched creation as unce
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const sent = []; const attachment = { role: 'agent', connectionId: crypto.randomUUID(), paymentProtocol: 1, expiresAt: Date.now() + 100000 };
   const ws = { readyState: 1, deserializeAttachment: () => attachment, send: (value) => sent.push(JSON.parse(value)) };
-  const relay = new BrowserAgentRelay({ getWebSockets: () => [ws] }, { DEEPSEEK_ACCOUNT_ID: 'fixed' });
+  const relay = new BrowserAgentRelay({ getWebSockets: () => [ws], storage: { get: async () => ({ expiresAt: Date.now() + 100000 }) } }, { DEEPSEEK_ACCOUNT_ID: 'fixed' });
   const request = () => new Request('https://relay.internal/execute', { method: 'POST', body: JSON.stringify(base()) });
   const pending = relay.fetch(request());
   for (let i = 0; i < 30 && !relay.pendingJobs.size; i++) await new Promise((r) => setImmediate(r));

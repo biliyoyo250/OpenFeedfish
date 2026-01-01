@@ -7,6 +7,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 export const validCommandId = (id) => typeof id === 'string' && uuid.test(id);
 export const validDeviceKey = (key) => typeof key === 'string' && /^[A-Za-z0-9_-]{43}$/.test(key);
 export const validPairCode = (code) => typeof code === 'string' && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code);
+export const validAccountId = (id) => typeof id === 'string' && id.length > 0 && id.length <= 200;
 
 // Both ends project the same small protocol. No URL, selector, JavaScript, file,
 // clipboard-read, browser-debugging or shell command can cross this boundary.
@@ -30,7 +31,7 @@ export function accountResult(value, expectedId) {
     const code = ['LOGIN_REQUIRED', 'UPSTREAM_NOT_JSON', 'UPSTREAM_UNAVAILABLE', 'AUTH_TOKEN_MISSING', 'SESSION_EXPIRED', 'ACCOUNT_MISMATCH', 'ACCOUNT_INELIGIBLE', 'ACCOUNT_CHECK_FAILED'].includes(value.code) ? value.code : 'ACCOUNT_CHECK_FAILED';
     return { ok: false, code, ...(Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? { httpStatus: value.httpStatus } : {}) };
   }
-  if (typeof expectedId !== 'string' || !expectedId || value.accountId !== expectedId) return { ok: false, code: 'ACCOUNT_MISMATCH' };
+  if (!validAccountId(value.accountId) || (expectedId !== null && value.accountId !== expectedId)) return { ok: false, code: 'ACCOUNT_MISMATCH' };
   if (value.currency !== 'CNY' || value.eligible !== true) return { ok: false, code: 'ACCOUNT_INELIGIBLE' };
-  return { ok: true, accountId: expectedId, currency: 'CNY' };
+  return { ok: true, accountId: value.accountId, currency: 'CNY' };
 }

@@ -160,7 +160,7 @@ export async function runAgent() {
   const { context, page } = await browser(directory);
   let cdp;
   try { cdp = await context.newCDPSession(page); } catch (error) { await context.close().catch(() => {}); throw error; }
-  let socket; let stopping = false; let viewing = false; let credit = false; let lastFrame = null; let queue = Promise.resolve(); let expectedId; let queued = 0; let frameAt = 0; let pumpTimer;
+  let socket; let stopping = false; let viewing = false; let credit = false; let lastFrame = null; let queue = Promise.resolve(); let queued = 0; let frameAt = 0; let pumpTimer;
   const seen = new Set();
   const send = (value) => { if (socket?.readyState === WebSocket.OPEN) socket.send(Buffer.isBuffer(value) ? value : JSON.stringify(value)); };
   const pump = () => {
@@ -214,16 +214,15 @@ export async function runAgent() {
             if (connection !== socket || connection.readyState !== WebSocket.OPEN) return;
             if (message.type === 'ready') {
               if (message.protocol !== AGENT_PROTOCOL || message.role !== 'agent') { connection.close(1002); return; }
-              expectedId = message.expectedAccountId;
               send({ type: 'capabilities', paymentProtocol: PAYMENT_PROTOCOL });
               if (!confirmed) { confirmed = true; attempt = 0; console.log('浏览器服务已上线。画面在 /admin 的“打开实时窗口”中，默认不弹出桌面窗口。'); }
               return;
             }
             if (message.type === 'payment-job') {
-              let job; try { job = paymentJob(message, expectedId); } catch { return; }
+              let job; try { job = paymentJob(message, message.accountId); } catch { return; }
               if (seen.has(job.id)) return;
               seen.add(job.id); if (seen.size > 512) seen.delete(seen.values().next().value);
-              const result = await executePaymentJob(page, job, { accountId: expectedId, receivedAt, checkAccount: () => checkBrowserAccount(page, expectedId), active: () => !stopping && connection === socket && connection.readyState === WebSocket.OPEN });
+              const result = await executePaymentJob(page, job, { accountId: job.accountId, receivedAt, checkAccount: () => checkBrowserAccount(page, job.accountId), active: () => !stopping && connection === socket && connection.readyState === WebSocket.OPEN });
               send({ type: 'payment-job-result', id: job.id, result });
               return;
             }
@@ -234,7 +233,7 @@ export async function runAgent() {
             seen.add(command.id); if (seen.size > 512) seen.delete(seen.values().next().value);
             // No action is replayed after a lost response or reconnection.
             let result;
-            try { result = await executeBrowserCommand(page, command, expectedId); }
+            try { result = await executeBrowserCommand(page, command, null); }
             catch { result = { ok: false, code: command.type === 'check-account' ? 'ACCOUNT_CHECK_FAILED' : 'ACTION_FAILED' }; }
             if (command.type !== 'input') send({ type: 'result', id: command.id, command: command.type, result });
           }).catch(() => { console.log('浏览器操作未完成，请在后台检查当前画面。'); }).finally(() => { queued--; });

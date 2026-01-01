@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "feedfish-api",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "vars": { "LOCAL_DEMO": "false", "TURNSTILE_SITE_KEY": "", "PAYMENTS_ENABLED": "false" },
+  "d1_databases": [{ "binding": "DB", "database_name": "feedfish", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
+  "observability": { "enabled": false }
+}

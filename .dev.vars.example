@@ -1,0 +1,5 @@
+# Copy to .dev.vars only for local development. Never commit credentials.
+ORDER_TOKEN_SECRET=replace-with-at-least-32-random-characters
+TURNSTILE_SECRET_KEY=
+# Add the verified DeepSeek session credential following docs/DEPLOY.md.
+DEEPSEEK_SESSION_TOKEN=

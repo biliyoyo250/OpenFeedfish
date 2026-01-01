@@ -115,7 +115,7 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) clear
 window.addEventListener('pagehide', stopPolling);
 window.addEventListener('pageshow', () => { if (order?.status === 'pending') { clearInterval(countdown); countdown = setInterval(tick, 1000); poll(); } });
 async function loadCaptcha() {
-  if (!config.turnstileSiteKey) return;
+  if (!config.turnstileSiteKey || !config.paymentsAvailable) return;
   await new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; script.onload = resolve; script.onerror = reject; document.head.append(script); });
   turnstileId = window.turnstile.render('#turnstile', { sitekey: config.turnstileSiteKey, action: 'create_order', theme: 'auto', size: 'flexible', callback: (value) => { token = value; }, 'expired-callback': () => { token = ''; }, 'error-callback': () => { token = ''; message('form-error', '人机验证暂时未完成，请刷新后重试。'); } });
 }

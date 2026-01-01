@@ -3,6 +3,7 @@ import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount } from './provider.js';
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics } from './browser-login.js';
+import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization } from './authorization.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -10,10 +11,10 @@ export async function handleAdmin(request, env) {
   const identity = await requireAdmin(request, env); const path = new URL(request.url).pathname;
   // Serve the management bundle through the same service binding as its HTML.
   // A content-addressed path cannot cache an older Pages bundle under a new URL.
-  if (/^\/admin\/(?:client\.[a-f0-9]{12}\.js|styles\.[a-f0-9]{12}\.css)$/.test(path) && request.method === 'GET') {
+  if ((path === '/admin/receiver.mjs' || /^\/admin\/(?:client\.[a-f0-9]{12}\.js|styles\.[a-f0-9]{12}\.css)$/.test(path)) && request.method === 'GET') {
     if (!env.ASSETS) throw new ApiError(503, 'ADMIN_UNAVAILABLE', '后台页面暂未就绪。');
     const response = await env.ASSETS.fetch(request);
-    return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream', 'Cache-Control': 'private, max-age=31536000, immutable' } });
+    return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': response.headers.get('Content-Type') || 'application/octet-stream', ...(path === '/admin/receiver.mjs' ? { 'Content-Disposition': 'attachment; filename="connect-account.mjs"' } : { 'Cache-Control': 'private, max-age=31536000, immutable' }) } });
   }
   if (path === '/admin' || path === '/admin/' || path === '/admin/index.html') {
     if (!env.ASSETS) throw new ApiError(503, 'ADMIN_UNAVAILABLE', '后台页面暂未就绪。');
@@ -21,7 +22,7 @@ export async function handleAdmin(request, env) {
     const response = await env.ASSETS.fetch(new Request(url, { method: 'GET' }));
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   }
-  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, browserLoginAvailable: !identity.demo && !!env.BROWSER, browserLogin: identity.demo ? null : await browserLoginState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
   if (path === '/api/admin/orders' && request.method === 'GET') {
     const rows = await env.DB.prepare('SELECT id,amount_fen,payment_method,nickname,message,status,payment_state,provider_status,provider_order_id,channel_order_id,created_at,paid_at,confirmed_at,last_check_error FROM orders WHERE is_demo=? ORDER BY created_at DESC LIMIT 50').bind(identity.demo ? 1 : 0).all();
@@ -36,6 +37,12 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  if (path === '/api/admin/account/authorize/start') return json(await startAuthorization(env, identity, body));
+  if (path === '/api/admin/account/authorize/complete') {
+    const account = await completeAuthorization(env, identity, body, (credentials) => importSession(env, credentials, identity.email));
+    return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
+  }
+  if (path === '/api/admin/account/authorize/cancel') { await cancelAuthorization(env, identity); return json({ ok: true }); }
   if (path === '/api/admin/account/login/start') return json(await startBrowserLogin(env, identity));
   if (path === '/api/admin/account/login/complete' || path === '/api/admin/account/login/cancel') {
     if (typeof body.id !== 'string' || !/^[0-9a-f-]{36}$/.test(body.id)) throw new ApiError(400, 'INVALID_LOGIN', '登录窗口标识无效。');

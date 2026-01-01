@@ -6,11 +6,20 @@ const checkButton = element('check-button');
 const disableButton = element('disable-button');
 const importButton = element('import-button');
 const loginStart = element('login-start');
-const loginComplete = element('login-complete');
 const loginCancel = element('login-cancel');
-const loginLink = element('login-link');
 let session = null;
 let busy = false;
+const connectionInput = (() => {
+  const values = new URLSearchParams(window.location.hash.slice(1));
+  if (![...values.keys()].some((key) => key.startsWith('connect_'))) return null;
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  const state = values.get('connect_state');
+  if (!state || !/^[A-Za-z0-9_-]{43}$/.test(state)) return { invalid: true };
+  if (values.has('connect_code')) return { code: values.get('connect_code'), state };
+  if (values.get('connect_error') === 'access_denied') return { denied: true };
+  const callbackPort = Number(values.get('connect_port'));
+  return Number.isInteger(callbackPort) && callbackPort >= 1024 && callbackPort <= 65535 ? { callbackPort, state } : { invalid: true };
+})();
 
 const accountStates = {
   connected: ['已连接', 'positive', '会话已连接，赞助将充入指定的 DeepSeek 账户。'],
@@ -49,13 +58,11 @@ function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
   fields.disabled = !writable;
   importButton.disabled = fields.disabled;
-  const browserReady = writable && session.browserLoginAvailable;
-  const activeLogin = Boolean(session?.browserLogin && Date.parse(session.browserLogin.expiresAt) > Date.now());
-  loginStart.disabled = !browserReady;
-  loginStart.textContent = activeLogin ? '重新打开登录窗口' : '打开官方登录窗口';
-  loginComplete.disabled = !browserReady || !activeLogin;
+  const authorizationReady = writable && session.authorizationAvailable;
+  const activeLogin = Boolean(session?.authorization && Date.parse(session.authorization.expiresAt) > Date.now());
+  loginStart.disabled = !authorizationReady || !activeLogin;
   loginCancel.hidden = !activeLogin;
-  loginCancel.disabled = !browserReady;
+  loginCancel.disabled = !authorizationReady;
   refreshButton.disabled = !writable;
   checkButton.disabled = !writable || !(session?.account?.configured || session?.account?.status === 'disabled');
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
@@ -63,7 +70,6 @@ function updateControls() {
 
 function lockAccess() {
   session = null;
-  clearLoginLink();
   form.reset();
   updateControls();
   element('access-state').textContent = '权限未就绪';
@@ -80,11 +86,6 @@ function lockAccess() {
   element('orders-container').hidden = true;
   element('orders-loading').hidden = true;
   element('orders-empty').hidden = true;
-}
-
-function clearLoginLink() {
-  loginLink.hidden = true;
-  loginLink.removeAttribute('href');
 }
 
 async function request(path, body) {
@@ -123,10 +124,9 @@ function renderSession(data) {
     throw new Error('账户状态暂不可用，请稍后重新加载页面。');
   }
   session = data;
-  if (!data.browserLogin) clearLoginLink();
-  element('login-state').textContent = data.browserLogin
-    ? `请在官方窗口完成登录，再回来保存。窗口截止 ${dateLabel(data.browserLogin.expiresAt)}。`
-    : data.browserLoginAvailable ? '登录窗口最长保留 5 分钟；仅保存已验证会话，不保存密码或短信验证码。' : '官方登录窗口暂未启用。';
+  element('login-state').textContent = data.authorization
+    ? `请在 DeepSeek 页面核对账户并授权。有效至 ${dateLabel(data.authorization.expiresAt)}，完成后自动核验并保存。`
+    : '从本机连接助手开始。账户令牌仅由 Cloudflare 接收、核验并加密保存。';
   element('access-error').hidden = true;
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
@@ -238,7 +238,7 @@ async function mutate(path, body, successMessage, sensitive = false) {
     setNotice(successMessage);
   } catch (error) {
     // Credential import failures use our own text, never an upstream response that could echo input.
-    const sessionErrors = { LOGIN_PENDING: '请在官方窗口完成登录和验证，再保存会话。', LOGIN_EXPIRED: '登录窗口已结束，请重新打开。', ACCOUNT_MISMATCH: '此登录账号与固定收款账户不一致，未替换已有会话。', SESSION_EXPIRED: '官方会话未通过后端核验，请重新登录后再保存。' };
+    const sessionErrors = { AUTH_EXPIRED: '本次授权已结束，请重新运行本机连接助手。', AUTH_REJECTED: '官方未完成这次授权，请重新连接。', ACCOUNT_MISMATCH: '此登录账号与固定收款账户不一致，未替换已有会话。', SESSION_EXPIRED: '官方会话未通过后端核验，请重新连接。' };
     const message = sensitive ? sessionErrors[error.code] || '会话验证未完成，请确认收款账户已经登录后重试。' : error.message;
     setNotice(saved ? `操作已完成，但刷新状态失败。${message}` : message, true);
   } finally {
@@ -263,25 +263,16 @@ form.addEventListener('submit', (event) => {
   void mutate('/api/admin/account/session', payload, '会话已验证并保存，账户状态已更新。', true);
 });
 
-loginStart.addEventListener('click', async () => {
+loginStart.addEventListener('click', () => {
   if (loginStart.disabled) return;
-  busy = true; updateControls(); clearLoginLink(); setNotice('正在打开官方登录窗口…');
   try {
-    const data = await request('/api/admin/account/login/start', {});
-    const url = new URL(data.liveViewUrl);
-    if (url.origin !== 'https://live.browser.run' || !url.pathname.startsWith('/ui/') || !data.id || !data.expiresAt) throw new Error('未取得有效的登录窗口。');
-    session.browserLogin = { id: data.id, expiresAt: data.expiresAt };
-    loginLink.href = url.href; loginLink.hidden = false;
-    element('login-state').textContent = '点击下方链接进入官方窗口。完成登录后，回到这里保存会话。登录窗口最长保留 5 分钟。';
-    setNotice('登录窗口已准备好。');
+    const url = new URL(session.authorization.authorizeUrl);
+    if (url.origin !== 'https://platform.deepseek.com' || url.pathname !== '/dsh/authorize') throw new Error('授权地址无效。');
+    window.location.assign(url.href);
   } catch (error) { setNotice(error.message, true); }
-  finally { busy = false; updateControls(); }
-});
-loginComplete.addEventListener('click', () => {
-  if (!loginComplete.disabled) void mutate('/api/admin/account/login/complete', { id: session.browserLogin.id }, '官方登录会话已验证并加密保存。', true);
 });
 loginCancel.addEventListener('click', () => {
-  if (!loginCancel.disabled && session?.browserLogin) void mutate('/api/admin/account/login/cancel', { id: session.browserLogin.id }, '登录窗口已关闭。');
+  if (!loginCancel.disabled && session?.authorization) void mutate('/api/admin/account/authorize/cancel', {}, '本次授权已取消。');
 });
 
 checkButton.addEventListener('click', () => {
@@ -308,9 +299,24 @@ refreshButton.addEventListener('click', async () => {
   }
 });
 
-window.addEventListener('pagehide', () => { form.reset(); clearLoginLink(); });
+window.addEventListener('pagehide', () => { form.reset(); });
 updateControls();
-refresh().catch((error) => {
+refresh().then(async () => {
+  if (!connectionInput) return;
+  if (connectionInput.invalid) { setNotice('连接参数无效，请从本机连接助手重新开始。', true); return; }
+  if (connectionInput.denied) { setNotice('官方授权未获确认，可重新发起连接。', true); return; }
+  if (connectionInput.code) {
+    try { await mutate('/api/admin/account/authorize/complete', connectionInput, '授权会话已验证并加密保存。', true); }
+    finally { connectionInput.code = ''; connectionInput.state = ''; }
+    return;
+  }
+  busy = true; updateControls(); setNotice('正在准备账户授权…');
+  try {
+    await request('/api/admin/account/authorize/start', connectionInput);
+    await refresh(); setNotice('授权入口已准备好，请核对账户后在官方页面授权。');
+  } catch (error) { setNotice(error.message, true); }
+  finally { connectionInput.state = ''; busy = false; updateControls(); }
+}).catch((error) => {
   session = null;
   updateControls();
   element('orders-loading').hidden = true;

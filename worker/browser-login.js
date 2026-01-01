@@ -8,7 +8,7 @@ const sdkFor = async () => import('@cloudflare/playwright');
 const rowFor = (env) => env.DB.prepare('SELECT * FROM account_login WHERE singleton=1').first();
 const closed = (env, id) => env.DB.prepare("UPDATE account_login SET state='closed',sealed_session=NULL WHERE singleton=1 AND id=?").bind(id).run();
 function available(env) {
-  if (!env.BROWSER) throw new ApiError(503, 'BROWSER_NOT_CONFIGURED', '官方登录窗口尚未配置。');
+  if (!env.BROWSER || env.BROWSER_LOGIN_ENABLED !== 'true') throw new ApiError(503, 'BROWSER_NOT_CONFIGURED', '云端登录已停用，请使用本机授权连接。');
 }
 function owned(row, identity, id, now) {
   if (!row || row.id !== id || row.owner_sub !== identity.sub || row.state === 'closed' || row.expires_at <= now) throw missing();

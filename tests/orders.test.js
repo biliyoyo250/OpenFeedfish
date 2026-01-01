@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import worker from '../worker/index.js';
-import { parseAmount, formatAmount, isDemo, validateOrder, verifyTurnstile } from '../worker/lib.js';
+import { ApiError, parseAmount, formatAmount, isDemo, validateOrder, verifyTurnstile } from '../worker/lib.js';
+import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization } from '../worker/authorization.js';
+import { createReceiver } from '../scripts/connect-account.mjs';
 import { verifyAccessToken } from '../worker/access.js';
 import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
@@ -18,6 +21,7 @@ function setup() {
   db.exec(readFileSync(new URL('../migrations/0002_account.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0003_reconciliation.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0004_browser_login.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0005_authorization.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
@@ -28,6 +32,7 @@ function setup() {
 function loginSetup() {
   const state = setup();
   state.env.BROWSER = {};
+  state.env.BROWSER_LOGIN_ENABLED = 'true';
   state.env.ACCOUNT_ENCRYPTION_KEY = Buffer.alloc(32, 13).toString('base64');
   const user = { id: 'fixed-browser-account', currency: 'CNY', feature_gates: { PAYMENT: true } };
   const counts = { acquisitions: 0, terminations: 0, disconnects: 0 };
@@ -42,6 +47,105 @@ function loginSetup() {
   } };
   return { ...state, sdk, user, counts, cookies };
 }
+
+function authorizationSetup() {
+  const state = setup(); state.env.ACCOUNT_ENCRYPTION_KEY = Buffer.alloc(32, 19).toString('base64');
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push({ url, options, body: options.body ? JSON.parse(options.body) : null });
+    const value = url.endsWith('/auth_init') ? { authorize_id: 'pending-grant', authorize_url: 'https://platform.deepseek.com/dsh/authorize?authorize_id=pending-grant', expires_in: 600 }
+      : url.endsWith('/auth_exchange') ? { token: 'new-private-dsh-grant-token' } : {};
+    return Response.json({ code: 0, data: { biz_code: 0, biz_data: value } });
+  };
+  return { ...state, calls, fetcher, owner: { sub: 'owner' }, input: { callbackPort: 16487, state: 'a'.repeat(43) } };
+}
+
+test('PKCE authorization keeps verifier and grant out of browser responses and pins only a verified CNY account', async () => {
+  const { env, db, calls, fetcher, owner, input } = authorizationSetup();
+  const started = await startAuthorization(env, owner, input, fetcher);
+  const row = db.prepare('SELECT * FROM account_authorization').get();
+  const flow = await unseal(row.sealed_flow, env.ACCOUNT_ENCRYPTION_KEY);
+  const expected = Buffer.from(await crypto.subtle.digest('SHA-256', Buffer.from(flow.verifier))).toString('base64url');
+  assert.equal(calls[0].body.code_challenge, expected);
+  assert.equal(calls[0].body.redirect_uri, 'http://127.0.0.1:16487/oauth/callback');
+  assert.equal(calls[0].options.redirect, 'error');
+  assert.doesNotMatch(JSON.stringify(started), new RegExp(flow.verifier));
+  assert.equal(row.sealed_flow.includes(flow.verifier), false);
+  const account = await completeAuthorization(env, owner, { state: input.state, code: 'one-time-code' }, (credentials) => importSession(env, credentials, 'owner@example.com', Date.now(), async (_url, options) => {
+    assert.equal(options.headers['x-dsh-auth-token'], 'new-private-dsh-grant-token');
+    assert.equal(options.headers.Authorization, undefined);
+    return Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed-dsh-account', currency: 'CNY', feature_gates: { PAYMENT: true } } } });
+  }), fetcher);
+  assert.equal(account.id, 'fixed-dsh-account'); assert.equal((await accountState(env)).configured, false);
+  assert.equal(calls[1].body.code_verifier, flow.verifier);
+  assert.equal(db.prepare('SELECT sealed_flow FROM account_authorization').get().sealed_flow, null);
+  assert.equal(db.prepare('SELECT sealed_credentials FROM account_session').get().sealed_credentials.includes('new-private-dsh-grant-token'), false);
+  await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'one-time-code' }, () => assert.fail('replay'), fetcher), { code: 'AUTH_EXPIRED' });
+});
+
+test('authorization rejects a foreign SSO subject, forged state and non-loopback callback input', async () => {
+  const { env, calls, fetcher, owner, input } = authorizationSetup();
+  for (const callbackPort of [-1, 0, 80, 65536, '16487', 1.5]) await assert.rejects(startAuthorization(env, owner, { ...input, callbackPort }, fetcher), { code: 'INVALID_AUTH' });
+  await startAuthorization(env, owner, input, fetcher);
+  assert.equal(await authorizationState(env, { sub: 'other' }), null);
+  await assert.rejects(startAuthorization(env, { sub: 'other' }, input, fetcher), { code: 'AUTH_BUSY' });
+  for (const [identity, state] of [[{ sub: 'other' }, input.state], [owner, 'b'.repeat(43)]]) await assert.rejects(completeAuthorization(env, identity, { state, code: 'code' }, () => assert.fail('untrusted callback'), fetcher), { code: 'AUTH_EXPIRED' });
+  assert.equal(calls.length, 1);
+  await assert.rejects(cancelAuthorization(env, { sub: 'other' }, fetcher), { code: 'AUTH_EXPIRED' });
+  await cancelAuthorization(env, owner, fetcher); assert.equal(calls[1].url.endsWith('/auth_cancel'), true);
+});
+
+test('concurrent authorization initialization and exchange admit one upstream operation', async () => {
+  const { env, calls, fetcher, owner, input } = authorizationSetup();
+  const starts = await Promise.allSettled([startAuthorization(env, owner, input, fetcher), startAuthorization(env, owner, input, fetcher)]);
+  assert.equal(starts.filter((r) => r.status === 'fulfilled').length, 1);
+  let saves = 0;
+  const finish = () => completeAuthorization(env, owner, { state: input.state, code: 'code' }, async () => { saves++; return { id: 'account' }; }, fetcher);
+  const results = await Promise.allSettled([finish(), finish()]);
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1); assert.equal(saves, 1);
+  assert.equal(calls.filter((c) => c.url.endsWith('/auth_exchange')).length, 1);
+});
+
+test('expiry cancels the pending grant and failed account checks revoke only the newly issued token', async () => {
+  const { env, db, calls, fetcher, owner, input } = authorizationSetup();
+  await startAuthorization(env, owner, input, fetcher);
+  db.prepare('UPDATE account_authorization SET expires_at=?').run(Date.now() - 1);
+  await cleanupAuthorization(env, fetcher);
+  assert.equal(calls.at(-1).url.endsWith('/auth_cancel'), true);
+  assert.equal(db.prepare('SELECT sealed_flow FROM account_authorization').get().sealed_flow, null);
+  await startAuthorization(env, owner, input, fetcher);
+  await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'code' }, async () => { throw new ApiError(409, 'ACCOUNT_MISMATCH', 'wrong account'); }, fetcher), { code: 'ACCOUNT_MISMATCH' });
+  assert.equal(calls.at(-1).url, 'https://platform.deepseek.com/auth-api/v0/users/logout');
+  assert.equal(calls.at(-1).options.headers['x-dsh-auth-token'], 'new-private-dsh-grant-token');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
+});
+
+test('authorization initialization never forwards an off-origin approval URL', async () => {
+  const { env, owner, input } = authorizationSetup();
+  await assert.rejects(startAuthorization(env, owner, input, async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { authorize_id: 'id', authorize_url: 'https://evil.example/dsh/authorize', expires_in: 600 } } })), { code: 'AUTH_PROTOCOL' });
+});
+
+test('loopback receiver enforces Host, Origin, state and one callback; forwards only code in a fragment', async () => {
+  const state = 'a'.repeat(43); const receiver = await createReceiver({ state, ttlMs: 10000 }); const local = new URL(receiver.receiverUrl);
+  try {
+    const forgedHost = await new Promise((accept, reject) => {
+      const request = httpRequest({ hostname: local.hostname, port: local.port, path: '/', headers: { Host: 'evil.example' } }, (response) => { response.resume(); accept(response.statusCode); });
+      request.on('error', reject); request.end();
+    });
+    assert.equal(forgedHost, 403);
+    assert.equal((await fetch(new URL('/start', local), { method: 'POST', headers: { Origin: 'https://evil.example' }, redirect: 'manual' })).status, 403);
+    const start = await fetch(new URL('/start', local), { method: 'POST', headers: { Origin: local.origin }, redirect: 'manual' });
+    assert.equal(start.status, 303);
+    const target = new URL(start.headers.get('location')); assert.equal(target.origin, 'https://feedfish.example'); assert.equal(target.search, '');
+    assert.equal(new URLSearchParams(target.hash.slice(1)).get('connect_state'), state);
+    assert.equal((await fetch(new URL('/oauth/callback?state=wrong&code=code', local), { redirect: 'manual' })).status, 400);
+    const callback = new URL('/oauth/callback', local); callback.searchParams.set('state', state); callback.searchParams.set('code', 'one-time-code');
+    const complete = await fetch(callback, { redirect: 'manual' }); assert.equal(complete.status, 303);
+    const result = new URL(complete.headers.get('location')); assert.equal(result.search, '');
+    assert.equal(new URLSearchParams(result.hash.slice(1)).get('connect_code'), 'one-time-code');
+    const replay = await fetch(callback, { redirect: 'manual' }).then((r) => r.status, () => 410); assert.equal(replay, 410);
+  } finally { await receiver.close(); }
+});
 
 test('official login saves only verified fixed-origin credentials and destroys its capability', async () => {
   const { env, db, sdk, user, counts } = loginSetup(); const identity = { sub: 'owner-one' };

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "connect-account": "node scripts/connect-account.mjs",
     "build": "node scripts/build.mjs",
     "dev": "npm run build && wrangler d1 migrations apply feedfish --local && wrangler dev --ip 127.0.0.1 --port 8787 --var LOCAL_DEMO:true",
     "test": "node --test",

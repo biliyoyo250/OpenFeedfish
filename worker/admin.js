@@ -3,7 +3,8 @@ import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount } from './provider.js';
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus } from './browser-login.js';
-import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure } from './authorization.js';
+import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
+import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -22,7 +23,7 @@ export async function handleAdmin(request, env) {
     const response = await env.ASSETS.fetch(new Request(url, { method: 'GET' }));
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   }
-  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
   if (path === '/api/admin/account/authorize/diagnostics' && request.method === 'GET' && !identity.demo) return json({ failure: await lastAuthorizationFailure(env) });
   if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) {
@@ -45,15 +46,19 @@ export async function handleAdmin(request, env) {
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
   if (path === '/api/admin/account/authorize/start') return json(await startAuthorization(env, identity, body));
-  if (path === '/api/admin/account/authorize/complete') {
+  if (path === '/api/admin/account/authorize/complete' || path === '/api/admin/account/authorize/retry') {
     try {
-      const account = await completeAuthorization(env, identity, body, (credentials) => importSession(env, credentials, identity.email));
+      const saveSession = (credentials, pendingId) => importSession(env, credentials, identity.email, Date.now(), fetch, pendingId);
+      const account = path.endsWith('/retry') ? await verifyPendingAuthorization(env, identity, body.id, saveSession) : await completeAuthorization(env, identity, body, saveSession);
       return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
     } catch (error) {
-      if (!(error instanceof ApiError) || !error.authorizationDiagnostic) throw error;
-      return json({ error: { code: error.code, message: error.message, diagnostic: error.authorizationDiagnostic } }, error.status);
+      const failure = error instanceof ApiError ? error : new ApiError(503, 'AUTH_SAVE_FAILED', '账户连接未能保存，请管理员检查保险库和数据库状态。');
+      if (path.endsWith('/retry')) await recordAuthorizationFailure(env, identity, 'account', failure);
+      if (!failure.authorizationDiagnostic) throw failure;
+      return json({ error: { code: failure.code, message: failure.message, diagnostic: failure.authorizationDiagnostic } }, failure.status);
     }
   }
+  if (path === '/api/admin/account/authorize/discard') return json(await discardPendingAuthorization(env, identity, body.id));
   if (path === '/api/admin/account/authorize/cancel') { await cancelAuthorization(env, identity); return json({ ok: true }); }
   if (path === '/api/admin/account/login/start') return json(await startBrowserLogin(env, identity));
   if (path === '/api/admin/account/login/complete' || path === '/api/admin/account/login/cancel') {
@@ -89,14 +94,15 @@ export async function handleAdmin(request, env) {
 }
 // First import may stage a verified session, but orders still require the pinned
 // deployment variable. The conditional upsert locks the first account atomically.
-export async function importSession(env, credentials, actor, now = Date.now(), fetcher = fetch) {
+export async function importSession(env, credentials, actor, now = Date.now(), fetcher = fetch, pendingId) {
   const previous = await env.DB.prepare('SELECT account_id FROM account_session WHERE singleton=1').first();
   const expected = env.DEEPSEEK_ACCOUNT_ID || previous?.account_id;
   const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
   const account = expected ? await verifyAccount({ ...env, DEEPSEEK_ACCOUNT_ID: expected }, credentials, fetcher) : await inspectAccount(credentials, fetcher);
-  const result = await env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET sealed_credentials=excluded.sealed_credentials,status=excluded.status,updated_at=excluded.updated_at,last_checked_at=excluded.last_checked_at,updated_by=excluded.updated_by WHERE account_session.account_id=excluded.account_id').bind(account.id, sealed, 'connected', now, now, actor).run();
+  const statement = env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET sealed_credentials=excluded.sealed_credentials,status=excluded.status,updated_at=excluded.updated_at,last_checked_at=excluded.last_checked_at,updated_by=excluded.updated_by WHERE account_session.account_id=excluded.account_id').bind(account.id, sealed, 'connected', now, now, actor);
+  const result = pendingId ? (await env.DB.batch([statement, env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=?').bind(pendingId)]))[0] : await statement.run();
   if (!result.meta.changes) throw new ApiError(409, 'ACCOUNT_MISMATCH', '固定收款账号已锁定，不能导入其他账号的会话。');
-  await audit(env, env.DEEPSEEK_ACCOUNT_ID ? 'session_connected' : 'session_staged', actor, now);
-  return account;
+  await audit(env, env.DEEPSEEK_ACCOUNT_ID ? 'session_connected' : 'session_staged', actor, now).catch(() => {});
+  return pendingId ? { ...account, pendingCleared: true } : account;
 }
 async function audit(env, event, actor, now) { await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(event, actor, now).run(); }

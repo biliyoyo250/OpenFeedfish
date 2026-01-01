@@ -7,6 +7,7 @@ import worker from '../worker/index.js';
 import { ApiError, parseAmount, formatAmount, isDemo, validateOrder, verifyTurnstile } from '../worker/lib.js';
 import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization, lastAuthorizationFailure } from '../worker/authorization.js';
 import { accountErrorMessage } from '../frontend/admin-errors.js';
+import { stagePendingAuthorization, pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization, cleanupPendingAuthorization } from '../worker/pending-authorization.js';
 import { createReceiver } from '../scripts/connect-account.mjs';
 import { verifyAccessToken } from '../worker/access.js';
 import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
@@ -23,6 +24,7 @@ function setup() {
   db.exec(readFileSync(new URL('../migrations/0003_reconciliation.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0004_browser_login.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0005_authorization.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0006_pending_authorization.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
@@ -145,7 +147,7 @@ test('failed code exchange records only its stage and numeric upstream codes', a
   assert.equal(db.prepare('SELECT state FROM account_authorization').get().state, 'closed');
 });
 
-test('an account HTTP challenge after exchange is distinct from an expired login and revokes the new grant', async () => {
+test('a blocked account read retains an encrypted grant for one-code exchange and later atomic verification', async () => {
   const { env, db, owner, input, fetcher, calls } = authorizationSetup();
   await startAuthorization(env, owner, input, fetcher);
   await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'private-code' }, (credentials) => importSession(env, credentials, 'owner@example.com', Date.now(), async () => new Response('private-html-body', { status: 403, headers: { 'Content-Type': 'text/html' } })), fetcher), (error) => {
@@ -154,9 +156,76 @@ test('an account HTTP challenge after exchange is distinct from an expired login
     return true;
   });
   assert.equal((await lastAuthorizationFailure(env)).code, 'UPSTREAM_NOT_JSON');
-  assert.equal(calls.at(-1).url, 'https://platform.deepseek.com/auth-api/v0/users/logout');
+  assert.equal(calls.at(-1).url.endsWith('/auth_exchange'), true);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
   assert.doesNotMatch(JSON.stringify(db.prepare('SELECT event FROM admin_audit').all()), /private|token/);
+  const pending = await pendingAuthorizationState(env, owner);
+  assert.doesNotMatch(JSON.stringify(pending), /token|sealed|credentials|owner/);
+  assert.equal(db.prepare('SELECT sealed_credentials FROM account_pending_authorization').get().sealed_credentials.includes('new-private-dsh-grant-token'), false);
+  await assert.rejects(startAuthorization(env, owner, input, fetcher), { code: 'AUTH_PENDING' });
+  const account = await verifyPendingAuthorization(env, owner, pending.id, (credentials, pendingId) => importSession(env, credentials, 'owner@example.com', Date.now(), async (_url, options) => {
+    assert.equal(options.headers.Origin, undefined); assert.equal(options.headers.Referer, undefined);
+    return Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed-after-retry', currency: 'CNY' } } });
+  }, pendingId), fetcher, Date.now() + 15 * 60000);
+  assert.equal(account.id, 'fixed-after-retry');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 0);
+  assert.equal(db.prepare('SELECT account_id FROM account_session').get().account_id, 'fixed-after-retry');
+  assert.equal((await accountState(env)).configured, false, 'deployment pin is still required');
+  assert.equal(calls.filter(call => call.url.endsWith('/auth_exchange')).length, 1);
+});
+
+test('pending grants enforce SSO ownership, serialize retries and recover an expired lease', async () => {
+  const { env, db, owner, fetcher } = authorizationSetup();
+  const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-pending-token' }, fetcher);
+  const foreign = { sub: 'other' };
+  assert.equal(await pendingAuthorizationState(env, foreign), null);
+  await assert.rejects(verifyPendingAuthorization(env, foreign, id, () => assert.fail('foreign')), { code: 'AUTH_EXPIRED' });
+  await assert.rejects(discardPendingAuthorization(env, foreign, id, fetcher), { code: 'AUTH_EXPIRED' });
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const first = verifyPendingAuthorization(env, owner, id, () => { entered(); return gate; }, fetcher);
+  await started;
+  await assert.rejects(verifyPendingAuthorization(env, owner, id, () => assert.fail('parallel')), { code: 'AUTH_BUSY' });
+  await assert.rejects(discardPendingAuthorization(env, owner, id, fetcher), { code: 'AUTH_BUSY' });
+  release({ id: 'verified' }); await first;
+  const nextId = await stagePendingAuthorization(env, owner, { dshToken: 'private-pending-token' }, fetcher);
+  db.prepare('UPDATE account_pending_authorization SET lease_until=?').run(Date.now() - 1);
+  assert.equal((await verifyPendingAuthorization(env, owner, nextId, async () => ({ id: 'after-lease' }), fetcher)).id, 'after-lease');
+});
+
+test('pending promotion rolls back the trusted vault if removing the candidate fails', async () => {
+  const { env, db, owner, fetcher } = authorizationSetup();
+  const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-pending-token' }, fetcher);
+  const prepare = env.DB.prepare;
+  env.DB.prepare = (sql) => sql.startsWith('DELETE FROM account_pending_authorization') ? { bind: () => ({ run: async () => { throw new Error('delete unavailable'); } }) } : prepare(sql);
+  await assert.rejects(verifyPendingAuthorization(env, owner, id, (credentials, pendingId) => importSession(env, credentials, 'owner', Date.now(), async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY' } } }), pendingId), fetcher), /delete unavailable/);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 1);
+  assert.equal((await pendingAuthorizationState(env, owner)).busy, false);
+  env.DB.prepare = prepare;
+});
+
+test('expired and discarded pending credentials are removed even when upstream logout is blocked', async () => {
+  const { env, db, owner } = authorizationSetup(); const now = Date.now(); const requests = [];
+  const blocked = async (url, options) => { requests.push({ url, options }); return new Response('private-block-page', { status: 403 }); };
+  await stagePendingAuthorization(env, owner, { dshToken: 'private-expiring-token' }, blocked, now);
+  assert.equal(await pendingAuthorizationState(env, owner, now + 7200001), null);
+  await cleanupPendingAuthorization(env, blocked, now + 7200001);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 0);
+  const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-discard-token' }, blocked);
+  assert.deepEqual(await discardPendingAuthorization(env, owner, id, blocked), { ok: true, revoked: false });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].options.headers['x-dsh-auth-token'], 'private-discard-token');
+  assert.equal(requests[1].options.redirect, 'manual');
+});
+
+test('an actually rejected credential is not retained for retry', async () => {
+  const { env, db, owner, fetcher } = authorizationSetup();
+  const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-invalid-token' }, fetcher);
+  await assert.rejects(verifyPendingAuthorization(env, owner, id, async () => { throw new ApiError(503, 'SESSION_EXPIRED', 'invalid'); }, fetcher), { code: 'SESSION_EXPIRED' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
 });
 
 test('admin errors never echo credential-related exception text or unknown diagnostic strings', () => {

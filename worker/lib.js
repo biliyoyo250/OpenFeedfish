@@ -3,6 +3,8 @@ export class ApiError extends Error {
 }
 export function withUpstreamDiagnostic(error, response, result) {
   if (response) error.upstreamStatus = response.status;
+  const challenge = response?.headers?.get('x-amzn-waf-action') || response?.headers?.get('cf-mitigated');
+  if (challenge === 'captcha' || challenge === 'challenge') error.upstreamChallenge = challenge;
   if (Number.isInteger(result?.code)) error.upstreamCode = result.code;
   if (Number.isInteger(result?.data?.biz_code)) error.upstreamBizCode = result.data.biz_code;
   return error;

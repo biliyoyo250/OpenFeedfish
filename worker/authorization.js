@@ -1,22 +1,24 @@
 import { ApiError, withUpstreamDiagnostic } from './lib.js';
 import { seal, unseal } from './vault.js';
+import { platformClientHeaders } from './platform-client.js';
+import { assertNoPendingAuthorization, stagePendingAuthorization, verifyPendingAuthorization, revokeGrant } from './pending-authorization.js';
 
 const origin = 'https://platform.deepseek.com';
 const lifetime = 600000;
-export const platformClientHeaders = { 'x-client-bundle-id': '', 'x-client-platform': 'web', 'x-client-version': '0.1.0', 'x-client-locale': 'zh_CN', 'x-client-timezone-offset': '28800' };
 const rowFor = (env) => env.DB.prepare('SELECT * FROM account_authorization WHERE singleton=1').first();
 const closed = (env, id) => env.DB.prepare("UPDATE account_authorization SET state='closed',sealed_flow=NULL WHERE singleton=1 AND id=?").bind(id).run();
 const expired = () => new ApiError(409, 'AUTH_EXPIRED', '本次授权已结束，请重新运行本机连接助手。');
 const busy = () => new ApiError(409, 'AUTH_BUSY', '账户授权正在处理，请稍后重试。');
 const base64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REDIRECT', 'UPSTREAM_REJECTED']);
+const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_BUSY', 'AUTH_PENDING', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REDIRECT', 'UPSTREAM_REJECTED']);
 export function authorizationDiagnostic(stage, error) {
   const value = { stage: ['initialize', 'exchange', 'account'].includes(stage) ? stage : 'account', code: diagnosticCodes.has(error?.code) ? error.code : 'AUTH_SAVE_FAILED' };
   for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error?.[key])) value[key] = error[key];
   if (['identity', 'currency', 'banned', 'payment'].includes(error?.accountCheck)) value.accountCheck = error.accountCheck;
+  if (['captcha', 'challenge'].includes(error?.upstreamChallenge)) value.upstreamChallenge = error.upstreamChallenge;
   return value;
 }
-async function recordFailure(env, identity, stage, error) {
+export async function recordAuthorizationFailure(env, identity, stage, error) {
   const diagnostic = authorizationDiagnostic(stage, error);
   if (error instanceof ApiError) error.authorizationDiagnostic = diagnostic;
   // Never retain exception text, authorization codes, upstream bodies or tokens.
@@ -65,6 +67,7 @@ export async function authorizationState(env, identity, now = Date.now()) {
   return { id: row.id, expiresAt: new Date(row.expires_at).toISOString(), authorizeUrl: authorizeUrl(flow.authorizeUrl) };
 }
 export async function startAuthorization(env, identity, input, fetcher = fetch, now = Date.now()) {
+  await assertNoPendingAuthorization(env, now);
   if (!Number.isInteger(input.callbackPort) || input.callbackPort < 1024 || input.callbackPort > 65535 || typeof input.state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(input.state)) throw new ApiError(400, 'INVALID_AUTH', '请从可信设备上的本机连接助手发起授权。');
   const redirectUri = `http://127.0.0.1:${input.callbackPort}/oauth/callback`;
   const previous = await rowFor(env);
@@ -93,7 +96,7 @@ export async function startAuthorization(env, identity, input, fetcher = fetch, 
     if (!saved.meta.changes) throw expired();
     return { id, expiresAt: new Date(expiresAt).toISOString(), authorizeUrl: flow.authorizeUrl };
   } catch (error) {
-    await recordFailure(env, identity, 'initialize', error);
+    await recordAuthorizationFailure(env, identity, 'initialize', error);
     await cancelFlow(flow, fetcher); await closed(env, id);
     throw error;
   }
@@ -107,19 +110,20 @@ export async function completeAuthorization(env, identity, input, saveSession, f
   if (flow.kind !== 'dsh' || flow.state !== input.state) throw expired();
   const claim = await env.DB.prepare("UPDATE account_authorization SET state='saving' WHERE singleton=1 AND id=? AND state='open' AND expires_at>?").bind(row.id, now).run();
   if (!claim.meta.changes) throw busy();
-  let token, stage = 'exchange';
+  let token, pendingId, stage = 'exchange';
   try {
     const data = await authRequest('auth_exchange', { code: input.code, code_verifier: flow.verifier, redirect_uri: flow.redirectUri, device_id: flow.deviceId, device_model: 'feedfish-worker', os_version: 'Cloudflare Workers' }, fetcher);
     if (typeof data?.token !== 'string' || !/^[\x21-\x7e]{20,6000}$/.test(data.token)) throw new ApiError(502, 'AUTH_PROTOCOL', '官方授权响应格式不正确。');
     token = data.token;
     if (Date.now() >= row.expires_at) throw expired();
     stage = 'account';
-    return await saveSession({ dshToken: token, deviceId: '', deviceModel: '', shumeiDeviceId: '' });
+    pendingId = await stagePendingAuthorization(env, identity, { dshToken: token, deviceId: '', deviceModel: '', shumeiDeviceId: '' }, fetcher);
+    return await verifyPendingAuthorization(env, identity, pendingId, saveSession, fetcher);
   } catch (error) {
     const failure = error instanceof ApiError ? error : new ApiError(503, 'AUTH_SAVE_FAILED', '账户连接未能保存，请管理员检查保险库和数据库状态。');
-    await recordFailure(env, identity, stage, failure);
+    await recordAuthorizationFailure(env, identity, stage, failure);
     // Only the newly issued grant is used here; never read an existing session.
-    if (token) await fetcher(`${origin}/auth-api/v0/users/logout`, { method: 'POST', headers: { ...platformClientHeaders, 'x-dsh-auth-token': token }, redirect: 'manual', signal: AbortSignal.timeout(10000) }).catch(() => {});
+    if (token && !pendingId) await revokeGrant({ dshToken: token }, fetcher);
     throw failure;
   } finally { await closed(env, row.id); }
 }

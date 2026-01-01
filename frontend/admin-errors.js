@@ -1,5 +1,7 @@
 const messages = {
   AUTH_EXPIRED: '本次授权已结束，请重新运行本机连接助手。',
+  AUTH_BUSY: '账户核验正在处理，请稍后重试。',
+  AUTH_PENDING: '已有待核验授权，请重试账户核验或取消暂存。',
   AUTH_REJECTED: 'DeepSeek 未接受本次授权码兑换。',
   AUTH_NETWORK: 'Cloudflare 未能连通 DeepSeek 授权接口。',
   AUTH_CHALLENGE: 'DeepSeek 要求验证 Cloudflare 的出站请求。',
@@ -32,6 +34,7 @@ export function accountErrorMessage(error) {
   const checks = { identity: '账户 ID', currency: 'CNY 币种', banned: 'API 使用资格', payment: '充值权限' };
   const check = Object.hasOwn(checks, diagnostic?.accountCheck) ? checks[diagnostic.accountCheck] : null;
   if (check) details.push(check);
+  if (['captcha', 'challenge'].includes(diagnostic?.upstreamChallenge)) details.push('上游人机验证');
   if (Object.hasOwn(messages, error?.code)) details.push(error.code);
   return details.length ? `${message}（${details.join(' · ')}）` : message;
 }

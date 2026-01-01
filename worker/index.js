@@ -4,6 +4,7 @@ import { handleAdmin } from './admin.js';
 import { applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconcile.js';
 import { cleanupBrowserLogin } from './browser-login.js';
 import { cleanupAuthorization } from './authorization.js';
+import { cleanupPendingAuthorization } from './pending-authorization.js';
 
 const localSecret = 'feedfish-local-demo-not-valid-in-production';
 const secretFor = (env, demo) => demo ? localSecret : env.ORDER_TOKEN_SECRET;
@@ -92,5 +93,5 @@ export default {
       return json({ error: { code: error instanceof ApiError ? error.code : 'INTERNAL_ERROR', message: error instanceof ApiError ? error.message : '服务暂不可用，请稍后再试。' } }, error instanceof ApiError ? error.status : 500);
     }
   },
-  async scheduled(_controller, env, ctx) { ctx.waitUntil(Promise.allSettled([reconcileScheduled(env), cleanupBrowserLogin(env), cleanupAuthorization(env)])); }
+  async scheduled(_controller, env, ctx) { ctx.waitUntil(Promise.allSettled([reconcileScheduled(env), cleanupBrowserLogin(env), cleanupAuthorization(env), cleanupPendingAuthorization(env)])); }
 };

@@ -1,7 +1,7 @@
 import { ApiError, assertOrigin, readJson, formatAmount } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
-import { verifyAccount } from './provider.js';
+import { inspectAccount, verifyAccount } from './provider.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -31,10 +31,8 @@ export async function handleAdmin(request, env) {
     if (typeof body.sessionToken !== 'string' || body.sessionToken.length < 20 || body.sessionToken.length > 6000 || /\s/.test(body.sessionToken)) throw new ApiError(400, 'INVALID_SESSION', '请输入有效的网页登录 token，不包含 Bearer 前缀。');
     for (const name of ['deviceId', 'deviceModel', 'shumeiDeviceId']) if (body[name] !== undefined && (typeof body[name] !== 'string' || body[name].length > 512 || /[\r\n]/.test(body[name]))) throw new ApiError(400, 'INVALID_DEVICE', '设备信息格式无效。');
     const credentials = { sessionToken: body.sessionToken, deviceId: body.deviceId || '', deviceModel: body.deviceModel || '', shumeiDeviceId: body.shumeiDeviceId || '' };
-    const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
-    const account = await verifyAccount(env, credentials);
-    await env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET account_id=excluded.account_id,sealed_credentials=excluded.sealed_credentials,status=excluded.status,updated_at=excluded.updated_at,last_checked_at=excluded.last_checked_at,updated_by=excluded.updated_by').bind(account.id, sealed, 'connected', now, now, identity.email).run();
-    await audit(env, 'session_connected', identity.email, now); return json({ ok: true });
+    const account = await importSession(env, credentials, identity.email, now);
+    return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
   }
   if (path === '/api/admin/account/check') {
     try {
@@ -53,5 +51,17 @@ export async function handleAdmin(request, env) {
     await audit(env, 'session_disabled', identity.email, now); return json({ ok: true });
   }
   throw new ApiError(404, 'NOT_FOUND', '页面不存在。');
+}
+// First import may stage a verified session, but orders still require the pinned
+// deployment variable. The conditional upsert locks the first account atomically.
+export async function importSession(env, credentials, actor, now = Date.now(), fetcher = fetch) {
+  const previous = await env.DB.prepare('SELECT account_id FROM account_session WHERE singleton=1').first();
+  const expected = env.DEEPSEEK_ACCOUNT_ID || previous?.account_id;
+  const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
+  const account = expected ? await verifyAccount({ ...env, DEEPSEEK_ACCOUNT_ID: expected }, credentials, fetcher) : await inspectAccount(credentials, fetcher);
+  const result = await env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET sealed_credentials=excluded.sealed_credentials,status=excluded.status,updated_at=excluded.updated_at,last_checked_at=excluded.last_checked_at,updated_by=excluded.updated_by WHERE account_session.account_id=excluded.account_id').bind(account.id, sealed, 'connected', now, now, actor).run();
+  if (!result.meta.changes) throw new ApiError(409, 'ACCOUNT_MISMATCH', '固定收款账号已锁定，不能导入其他账号的会话。');
+  await audit(env, env.DEEPSEEK_ACCOUNT_ID ? 'session_connected' : 'session_staged', actor, now);
+  return account;
 }
 async function audit(env, event, actor, now) { await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(event, actor, now).run(); }

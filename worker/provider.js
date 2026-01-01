@@ -24,12 +24,17 @@ export async function upstream(path, credentials, body, fetcher = fetch) {
   if (result.code !== 0 || result.data?.biz_code !== 0) throw new ApiError(502, 'UPSTREAM_REJECTED', '收款平台未接受请求，请管理员检查账号状态。');
   return result.data.biz_data;
 }
-export async function verifyAccount(env, credentials, fetcher = fetch) {
-  if (!env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先设置固定的 DEEPSEEK_ACCOUNT_ID。');
+export async function inspectAccount(credentials, fetcher = fetch) {
   const user = await upstream('/auth-api/v0/users/current', credentials, undefined, fetcher);
-  if (typeof user?.id !== 'string' || user.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '会话所属账号与固定收款账号不一致。');
+  if (typeof user?.id !== 'string' || !user.id || user.id.length > 200) throw new ApiError(502, 'ACCOUNT_INVALID', '未能核对收款账号。');
   if (user.currency !== 'CNY' || user.is_api_banned === true || user.feature_gates?.PAYMENT === false) throw new ApiError(409, 'ACCOUNT_UNAVAILABLE', '该账号当前不能用于 CNY 充值。');
   return { id: user.id, currency: user.currency };
+}
+export async function verifyAccount(env, credentials, fetcher = fetch) {
+  if (!env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先设置固定的 DEEPSEEK_ACCOUNT_ID。');
+  const account = await inspectAccount(credentials, fetcher);
+  if (account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '会话所属账号与固定收款账号不一致。');
+  return account;
 }
 function responseFen(value) {
   if (typeof value !== 'string' || !/^\d+(?:\.\d+)?$/.test(value)) throw new ApiError(502, 'UPSTREAM_AMOUNT_INVALID', '付款金额未能核对，请联系收款人。');

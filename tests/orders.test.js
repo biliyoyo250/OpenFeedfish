@@ -8,6 +8,7 @@ import { verifyAccessToken } from '../worker/access.js';
 import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
 import { applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
+import { importSession } from '../worker/admin.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 
 function setup() {
@@ -131,6 +132,36 @@ test('local demo admin is read-only and never returns configured secrets', async
   assert.equal((await request('/api/admin/account/session', { method: 'POST', headers: { 'X-Feedfish-Admin': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionToken: 'never-save' }) })).status, 403);
 });
 const success = (data) => Response.json({ code: 0, data: { biz_code: 0, biz_data: data } });
+test('first trusted session import encrypts credentials but cannot collect before deployment pin', async () => {
+  const { env, db } = setup(); env.LOCAL_DEMO = 'false'; env.ACCOUNT_ENCRYPTION_KEY = Buffer.alloc(32, 8).toString('base64');
+  const credentials = { sessionToken: 'owner-session-not-for-logs' };
+  await importSession(env, credentials, 'owner@example.com', Date.now(), async () => success({ id: 'fixed-owner', currency: 'CNY' }));
+  const row = db.prepare('SELECT * FROM account_session').get();
+  assert.equal(row.account_id, 'fixed-owner'); assert.equal(row.sealed_credentials.includes(credentials.sessionToken), false);
+  assert.equal((await accountState(env)).configured, false);
+  await assert.rejects(credentialsFor(env), { code: 'ACCOUNT_NOT_CONFIGURED' });
+  env.DEEPSEEK_ACCOUNT_ID = 'fixed-owner';
+  assert.equal((await accountState(env)).configured, true);
+  assert.equal((await credentialsFor(env)).sessionToken, credentials.sessionToken);
+});
+test('staged and pinned sessions reject account replacement and unusable CNY accounts', async () => {
+  const { env, db } = setup(); env.ACCOUNT_ENCRYPTION_KEY = Buffer.alloc(32, 8).toString('base64');
+  const credentials = { sessionToken: 'owner-session' };
+  for (const user of [{ id: 'owner', currency: 'USD' }, { id: 'owner', currency: 'CNY', is_api_banned: true }, { id: 'owner', currency: 'CNY', feature_gates: { PAYMENT: false } }]) await assert.rejects(importSession(env, credentials, 'owner@example.com', Date.now(), async () => success(user)), { code: 'ACCOUNT_UNAVAILABLE' });
+  assert.equal(db.prepare('SELECT count(*) n FROM account_session').get().n, 0);
+  await importSession(env, credentials, 'owner@example.com', Date.now(), async () => success({ id: 'owner', currency: 'CNY' }));
+  await assert.rejects(importSession(env, { sessionToken: 'other' }, 'owner@example.com', Date.now(), async () => success({ id: 'other', currency: 'CNY' })), { code: 'ACCOUNT_MISMATCH' });
+  env.DEEPSEEK_ACCOUNT_ID = 'other';
+  await assert.rejects(importSession(env, { sessionToken: 'other' }, 'owner@example.com', Date.now(), async () => success({ id: 'other', currency: 'CNY' })), { code: 'ACCOUNT_MISMATCH' });
+  assert.equal(db.prepare('SELECT account_id FROM account_session').get().account_id, 'owner');
+});
+test('concurrent first imports can lock only one fixed account', async () => {
+  const { env, db } = setup(); env.ACCOUNT_ENCRYPTION_KEY = Buffer.alloc(32, 8).toString('base64');
+  const results = await Promise.allSettled(['owner-a', 'owner-b'].map(id => importSession(env, { sessionToken: id }, 'owner@example.com', Date.now(), async () => success({ id, currency: 'CNY' }))));
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.find(result => result.status === 'rejected').reason.code, 'ACCOUNT_MISMATCH');
+  assert.equal(db.prepare('SELECT count(*) n FROM account_session').get().n, 1);
+});
 test('provider uses observed CNY endpoints, integer yuan, fixed account and preserves fallback URL', async () => {
   const env = { DEEPSEEK_ACCOUNT_ID: 'fixed', DEEPSEEK_SESSION_TOKEN: 'private-token' }; const calls = [];
   const fetcher = async (url, options) => { calls.push({ url, options }); return url.endsWith('/current') ? success({ id: 'fixed', currency: 'CNY' }) : success({ payment_order_id: 'upstream-1', amount: '10.000000', url: 'https://payment.example/code', fallback: true }); };

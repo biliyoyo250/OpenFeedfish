@@ -33,7 +33,7 @@
         <div><dt>最近验证</dt><dd id="last-checked">—</dd></div>
       </dl>
       <p id="account-description" class="muted">正在确认管理权限与账户配置。</p>
-      <p id="account-id-warning" class="inline-warning" hidden>尚未指定固定收款账户。请由管理员配置环境变量 <code>DEEPSEEK_ACCOUNT_ID</code>，再导入会话。</p>
+      <p id="account-id-warning" class="inline-warning" hidden>首次导入会话后会识别并锁定账户。将其 ID 配置为 <code>DEEPSEEK_ACCOUNT_ID</code> 后才可开放收款。</p>
       <div class="panel-bottom"><p class="small muted">会话更新时间：<span id="updated-at">—</span></p><div class="action-group"><button id="check-button" class="button" type="button" disabled>验证连接</button><button id="disable-button" class="button danger" type="button" disabled>停止新订单</button></div></div>
     </section>
 
@@ -45,13 +45,13 @@
           <legend class="visually-hidden">导入 DeepSeek 登录会话</legend>
           <label for="session-token">登录会话 Token <span class="required-label">必填</span></label>
           <input id="session-token" name="sessionToken" type="password" required maxlength="6000" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="token-help" placeholder="粘贴当前登录会话凭证">
-          <p id="token-help" class="field-help">由后端验证并保存；提交后清空，不回显或存入浏览器存储。</p>
+          <p id="token-help" class="field-help">使用官网请求 Authorization 中的网页登录 Token。由后端验证并加密保存，提交后清空，不回显或存入浏览器存储。</p>
           <details class="device-details"><summary>设备信息 <span>选填；需要与已有会话对应时填写</span></summary><div class="device-fields">
             <div><label for="device-id">设备 ID <span class="optional-label">x-device-id</span></label><input id="device-id" name="deviceId" type="text" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
             <div><label for="device-model">设备名称 <span class="optional-label">x-device-model</span></label><input id="device-model" name="deviceModel" type="text" maxlength="512" autocomplete="off" spellcheck="false"></div>
             <div class="wide"><label for="shumei-device-id">数美设备 ID <span class="optional-label">shumei_device_id</span></label><input id="shumei-device-id" name="shumeiDeviceId" type="password" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
           </div></details>
-          <div class="form-bottom"><p class="small muted">核验固定账户 ID 后才会启用。</p><button id="import-button" class="button primary" type="submit" disabled>验证并保存会话</button></div>
+          <div class="form-bottom"><p class="small muted">固定账户配置完成后才可开放收款。</p><button id="import-button" class="button primary" type="submit" disabled>验证并保存会话</button></div>
         </fieldset>
       </form>
     </section>

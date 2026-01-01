@@ -43,7 +43,7 @@ function dateLabel(value) {
 
 function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
-  fields.disabled = !writable || !session?.expectedAccountId;
+  fields.disabled = !writable;
   importButton.disabled = fields.disabled;
   refreshButton.disabled = !writable;
   checkButton.disabled = !writable || !(session?.account?.configured || session?.account?.status === 'disabled');
@@ -110,11 +110,12 @@ function renderSession(data) {
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
   element('admin-identity').textContent = data.demo ? '本地后台演示' : `管理员：${data.email || '已验证身份'}`;
-  const state = accountStates[data.account.status] || accountStates.unverified;
+  const staged = !data.expectedAccountId && data.account.accountId && !data.demo;
+  const state = staged ? ['待固定账户', 'warning', '会话已验证并加密保存。请将此账户 ID 固定到部署配置后再开放收款。'] : accountStates[data.account.status] || accountStates.unverified;
   element('account-status').textContent = state[0];
   element('account-status').className = `status-badge ${state[1]}`;
   element('account-description').textContent = data.demo ? '以下为本地演示信息，不代表真实 DeepSeek 账户连接状态。' : state[2];
-  element('expected-account-id').textContent = data.expectedAccountId || '尚未指定';
+  element('expected-account-id').textContent = data.expectedAccountId || data.account.accountId || '尚未导入';
   element('account-id-warning').hidden = Boolean(data.expectedAccountId) || data.demo;
   element('updated-at').textContent = dateLabel(data.account.updatedAt);
   element('last-checked').textContent = dateLabel(data.account.lastCheckedAt);
@@ -216,7 +217,7 @@ async function mutate(path, body, successMessage, sensitive = false) {
     setNotice(successMessage);
   } catch (error) {
     // Credential import failures use our own text, never an upstream response that could echo input.
-    const message = sensitive ? '会话验证未完成，请确认凭证有效、设备信息匹配，且属于上方固定账户。' : error.message;
+    const message = sensitive ? '会话验证未完成，请确认这是收款账户的有效网页登录会话，必要时填写对应设备信息。' : error.message;
     setNotice(saved ? `操作已完成，但刷新状态失败。${message}` : message, true);
   } finally {
     busy = false;
@@ -227,7 +228,7 @@ async function mutate(path, body, successMessage, sensitive = false) {
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   if (fields.disabled || busy || !form.reportValidity()) return;
-  const payload = { sessionToken: element('session-token').value.trim() };
+  const payload = { sessionToken: element('session-token').value.trim().replace(/^Bearer\s+/i, '') };
   for (const [key, id] of [['deviceId', 'device-id'], ['deviceModel', 'device-model'], ['shumeiDeviceId', 'shumei-device-id']]) {
     const value = element(id).value.trim();
     if (value) payload[key] = value;

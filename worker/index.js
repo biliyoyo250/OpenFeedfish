@@ -1,7 +1,7 @@
 import { ApiError, parseAmount, formatAmount, validateOrder, isDemo, hash, accessToken, publicOrder, assertOrigin, readJson, verifyTurnstile } from './lib.js';
-import { providerReady, createPayment, queryPayment } from './provider.js';
+import { providerReady, createPayment } from './provider.js';
 import { handleAdmin } from './admin.js';
-import { applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconcile.js';
+import { AGENT_CHECK_INTERVAL, applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconcile.js';
 import { cleanupBrowserLogin } from './browser-login.js';
 import { cleanupAuthorization } from './authorization.js';
 import { cleanupPendingAuthorization } from './pending-authorization.js';
@@ -87,10 +87,16 @@ async function loadOrder(request, env, id, demo) {
   if (!row) throw new ApiError(404, 'NOT_FOUND', '无法读取这笔订单。');
   return row;
 }
-async function getOrder(request, env, id, demo) {
+async function getOrder(request, env, ctx, id, demo) {
   await rateLimit(request, env, 'query', 60, demo);
   let row = await loadOrder(request, env, id, demo);
-  if (row.status === 'pending' && row.provider_transport !== 'agent') {
+  if (row.status !== 'pending') return json(publicOrder(row));
+  if (row.provider_transport === 'agent') {
+    const now = Date.now();
+    if (row.provider_order_id && row.expires_at + 60000 > now && row.last_checked_at <= now - AGENT_CHECK_INTERVAL && ctx?.waitUntil) {
+      ctx.waitUntil(reconcileOrder(env, row).catch(() => {}));
+    }
+  } else {
     await reconcileOrder(env, row);
     row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
   }
@@ -109,7 +115,7 @@ export default {
       if (url.pathname === '/api/orders' && request.method === 'POST') return await createOrder(request, env, demo);
       const match = url.pathname.match(/^\/api\/orders\/([0-9a-f-]{36})(\/demo-pay)?$/);
       if (match && uuid.test(match[1])) {
-        if (!match[2] && request.method === 'GET') return await getOrder(request, env, match[1], demo);
+        if (!match[2] && request.method === 'GET') return await getOrder(request, env, ctx, match[1], demo);
         if (match[2] && request.method === 'POST' && demo) {
           assertOrigin(request, demo); const row = await loadOrder(request, env, match[1], demo);
           if (row.status !== 'pending' || row.expires_at <= Date.now()) throw new ApiError(409, 'ORDER_CLOSED', '该演示订单已关闭。');

@@ -14,7 +14,7 @@ import { createReceiver } from '../scripts/connect-account.mjs';
 import { verifyAccessToken } from '../worker/access.js';
 import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
-import { applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
+import { AGENT_CHECK_INTERVAL, applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
 import { importSession } from '../worker/admin.js';
 import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics, browserResourceStatus, browserTaskView, completeBrowserTask } from '../worker/browser-login.js';
 import { cookieHeader } from '../worker/provider.js';
@@ -50,15 +50,15 @@ function publicAgentSetup(t) {
     if (job.operation === 'create' && control.failure === 'uncertain') return Response.json({ ok: true, httpStatus: 202, isJson: false, challenge: 'challenge', creationAttempted: true });
     const data = job.operation === 'profile' ? { id: job.accountId, currency: 'CNY' }
       : job.operation === 'create' ? { payment_order_id: 'synthetic-public-order', amount: String(job.amountFen / 100), currency: 'CNY', url: 'https://payments.example.invalid/synthetic-qr', fallback: true }
-        : job.operation === 'capture' ? { order: { id: 'synthetic-public-order', amount: control.amount, currency: 'CNY', status: control.paid ? 'SUCCESS' : 'CREATED' } }
-          : { invoices: { payment_orders: [{ payment_order_id: 'synthetic-public-order', amount: control.amount, currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date().toISOString() }] } };
+        : job.operation === 'capture' ? { order: { id: job.providerOrderId, amount: control.amount, currency: 'CNY', status: control.paid ? 'SUCCESS' : 'CREATED' } }
+          : { invoices: { payment_orders: [{ payment_order_id: job.providerOrderId, amount: control.amount, currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date().toISOString() }] } };
     return Response.json({ ok: true, httpStatus: 200, isJson: true, creationAttempted: job.operation === 'create', data: { code: 0, data: { biz_code: 0, biz_data: data } } });
   } }) };
   t.mock.method(globalThis, 'fetch', async (url) => {
     assert.equal(url, 'https://challenges.cloudflare.com/turnstile/v0/siteverify');
     return Response.json({ success: true, hostname: 'feedfish.example', action: 'create_order' });
   });
-  const request = (path, options = {}) => worker.fetch(new Request(`https://feedfish.example${path}`, options), env);
+  const request = (path, options = {}, ctx) => worker.fetch(new Request(`https://feedfish.example${path}`, options), env, ctx);
   const create = (body = {}, key = crypto.randomUUID()) => request('/api/orders', { method: 'POST', headers: { Origin: 'https://feedfish.example', 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify({ amount: '37', paymentMethod: 'alipay', nickname: '访客', message: '留言', turnstileToken: 'fixture-token', ...body }) });
   return { ...state, request, create, control };
 }
@@ -563,12 +563,63 @@ test('public Alipay checkout pins amount and transport, saves notes, and reads s
   control.online = false;
   const headers = { Authorization: `Bearer ${order.accessToken}` };
   assert.equal((await (await request(`/api/orders/${order.id}`, { headers })).json()).status, 'pending');
-  assert.equal(control.jobs.length, 2, 'public reads do not consume browser tasks even while the executor is offline');
+  assert.equal(control.jobs.length, 2, 'the ledger is readable while the executor is offline');
   control.online = true; control.paid = true; await reconcileOrder(env, row, 'scheduled');
   const paid = await (await request(`/api/orders/${order.id}`, { headers })).json();
   assert.equal(paid.status, 'paid'); assert.equal(paid.qrCode, null); assert.equal(control.jobs.length, 4);
   const saved = db.prepare('SELECT * FROM orders WHERE id=?').get(order.id);
   assert.equal(saved.provider_status, 'SUCCESS'); assert.ok(saved.paid_at); assert.ok(saved.confirmed_at);
+});
+
+test('scheduled browser checks finish the active checkout before processing older bills', async (t) => {
+  const { env, db, create, control } = publicAgentSetup(t);
+  const old = await (await create()).json();
+  db.prepare("UPDATE orders SET provider_order_id='synthetic-older-order',expires_at=? WHERE id=?").run(Date.now() - 1000, old.id);
+  const active = await (await create()).json();
+  db.prepare('UPDATE orders SET last_checked_at=? WHERE id=?').run(Date.now() - AGENT_CHECK_INTERVAL - 1000, active.id);
+  control.jobs.length = 0;
+  control.paid = true;
+
+  await reconcileScheduled(env);
+
+  assert.deepEqual(control.jobs.map((job) => [job.operation, job.providerOrderId]), [
+    ['capture', 'synthetic-public-order'],
+    ['invoice', 'synthetic-public-order'],
+    ['capture', 'synthetic-older-order'],
+    ['invoice', 'synthetic-older-order']
+  ]);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM orders WHERE status='paid'").get().n, 2);
+});
+
+test('active checkout starts a rate-limited background check for the authenticated order', async (t) => {
+  const { db, request, create, control } = publicAgentSetup(t);
+  const order = await (await create()).json();
+  const path = `/api/orders/${order.id}`;
+  const headers = { Authorization: `Bearer ${order.accessToken}` };
+  const tasks = [];
+  const ctx = { waitUntil: (task) => tasks.push(task) };
+  control.jobs.length = 0;
+
+  assert.equal((await request(path, {}, ctx)).status, 401);
+  assert.equal(control.jobs.length, 0);
+  const reads = await Promise.all([request(path, { headers }, ctx), request(path, { headers }, ctx)]);
+  for (const read of reads) assert.equal((await read.json()).status, 'pending');
+  await Promise.all(tasks.splice(0));
+  assert.deepEqual(control.jobs.map((job) => job.operation), ['capture']);
+
+  control.paid = true;
+  assert.equal((await (await request(path, { headers }, ctx)).json()).status, 'pending');
+  await Promise.all(tasks.splice(0));
+  assert.equal(control.jobs.length, 1);
+
+  db.prepare('UPDATE orders SET last_checked_at=? WHERE id=?').run(Date.now() - AGENT_CHECK_INTERVAL - 1000, order.id);
+  await request(path, { headers }, ctx);
+  await Promise.all(tasks.splice(0));
+  const confirmed = await (await request(path, { headers }, ctx)).json();
+  assert.equal(confirmed.status, 'paid');
+  assert.equal(confirmed.qrCode, null);
+  assert.deepEqual(control.jobs.map((job) => job.operation), ['capture', 'capture', 'invoice']);
+  assert.equal(db.prepare("SELECT source FROM payment_events WHERE state='paid'").get().source, 'poll');
 });
 
 test('public checkout rejects disabled methods, legacy oversized amounts, offline devices and invalid Turnstile before creating', async (t) => {

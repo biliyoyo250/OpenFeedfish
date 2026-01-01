@@ -81,7 +81,7 @@ export async function handleAdmin(request, env) {
     if (typeof body.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.id)) throw new ApiError(400, 'INVALID_ORDER_ID', '测试账单标识无效。');
     let row = await env.DB.prepare("SELECT * FROM orders WHERE id=? AND is_demo=0 AND provider_transport='agent'").bind(body.id).first();
     if (!row?.provider_order_id) throw new ApiError(404, 'NOT_FOUND', '该账单尚无可核对的平台订单号。');
-    try { await reconcileOrder(env, row, 'admin-agent'); }
+    try { await reconcileOrder(env, row); }
     catch (error) { return paymentFailure(env, identity, 'agent_payment_check_failed', error); }
     row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(row.id).first();
     return json(publicOrder(row));

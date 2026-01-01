@@ -108,10 +108,10 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 .timer { font-size: 11px; line-height: 20px; min-height: 20px; color: var(--on-surface-variant); margin: 6px 0 22px; font-variant-numeric: tabular-nums; }
 .payment-actions { display: grid; gap: 12px; }
 .return-merchant, .manual-check-status { margin: 0; padding: 6px 8px; color: var(--on-surface-variant); font-size: 12px; line-height: 1.6; }
-.return-merchant.is-highlighted { border-radius: 12px; background: var(--primary-container); color: var(--on-primary-container); font-weight: 700; }
-.payment-check-fish { position: fixed; z-index: 2; right: max(10px, env(safe-area-inset-right, 0px)); bottom: max(10px, env(safe-area-inset-bottom, 0px)); display: grid; justify-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--on-surface); }
-.payment-check-fish img { display: block; width: clamp(76px, 23vw, 116px); height: auto; }
-.payment-check-fish strong { padding: 4px 10px; border-radius: 14px; background: var(--surface-container); font-size: 13px; }
+.return-merchant.is-highlighted { border-radius: 12px; background: var(--primary-container); color: var(--on-primary-container); box-shadow: 0 0 0 1px var(--primary); font-weight: 700; }
+.payment-check-fish { position: fixed; z-index: 2; right: max(10px, env(safe-area-inset-right, 0px)); bottom: max(10px, env(safe-area-inset-bottom, 0px)); width: min(clamp(148px, 42vw, 224px), calc(50vw - 64px)); padding: 0; border: 0; background: transparent; }
+.payment-check-fish img { display: block; width: 100%; aspect-ratio: 1; height: auto; }
+.payment-check-fish strong { position: absolute; top: 24%; left: 44%; width: 58%; transform: translate(-50%, -50%); color: #1d2850; text-align: center; font-size: clamp(11px, 3.1vw, 18px); line-height: 1.2; overflow-wrap: anywhere; pointer-events: none; }
 .payment-check-fish.is-retreating { pointer-events: none; animation: fish-retreat .24s ease-in forwards; }
 @keyframes fish-retreat { to { transform: translateX(calc(100% + 64px)) scale(.75); } }
 .secondary-button { background: var(--primary-container); color: var(--on-primary-container); }
@@ -140,6 +140,9 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
   .icon-button { top: 66px; left: calc(100% + 8px); }
   .payment-pill { gap: 6px; padding-left: 10px; padding-right: 10px; font-size: 13px; }
   .selection-mark { width: 12px; height: 12px; }
+}
+@media (max-width: 620px) {
+  .return-merchant.is-highlighted ~ .manual-check-status { padding-inline-end: calc(50% - 46px); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }

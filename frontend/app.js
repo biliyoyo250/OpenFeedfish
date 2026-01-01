@@ -6,10 +6,18 @@ const form = $('sponsor-form');
 const storageKey = 'feedfish-order-v1';
 const inWeChat = /\bMicroMessenger\b/i.test(navigator.userAgent);
 const checkDelays = [0, 0, 3000, 3000, 5000, 5000, 7000, 7000];
+const checkFishMessages = {
+  2: '人别戳了',
+  4: '记得返回商家',
+  6: '鱼在等回音',
+  8: '付款后回来看',
+  10: '让鱼喘口气',
+};
 let config, order, timer, countdown, turnstileId, token = '', requestKey, requestFingerprint, polling = false;
 let backoff = 4000;
 let animationKey, handoff, handoffTimer;
 let checkingPayment = false, manualChecks = 0, nextCheckAt = 0, checkTimer, checkFish;
+let reminderPulse;
 let submitting = false;
 const nicknameDialog = $('nickname-dialog');
 initFish();
@@ -60,6 +68,7 @@ function countDownToPayment(seconds) {
 
 async function resumePayment() {
   if (order?.status !== 'pending') return;
+  updateCheckButton();
   if (handoff) {
     clearTimeout(handoffTimer);
     handoff = null;
@@ -73,30 +82,38 @@ async function resumePayment() {
 
 function updateCheckButton() {
   clearTimeout(checkTimer);
-  const remaining = nextCheckAt - Date.now();
-  $('check-payment').disabled = checkingPayment || remaining > 0;
-  if (!checkingPayment && remaining > 0) checkTimer = setTimeout(updateCheckButton, remaining);
+  const button = $('check-payment');
+  const remaining = Math.max(0, nextCheckAt - Date.now());
+  const seconds = Math.ceil(remaining / 1000);
+  button.disabled = checkingPayment || seconds > 0;
+  button.textContent = seconds ? `查看付款结果……${seconds}` : '查看付款结果';
+  if (seconds) checkTimer = setTimeout(updateCheckButton, remaining - (seconds - 1) * 1000);
 }
 
 function removeCheckFish() {
   checkFish?.remove();
   checkFish = null;
+  reminderPulse?.cancel();
+  reminderPulse = null;
   $('return-merchant').classList.remove('is-highlighted');
 }
 
-function showCheckFish() {
+function showCheckFish(text) {
+  removeCheckFish();
+  const reminder = $('return-merchant');
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'payment-check-fish';
-  button.setAttribute('aria-label', '人，别戳了。点击关闭小鱼提示');
+  button.setAttribute('aria-label', `${text}。点击关闭小鱼提示`);
   const image = new Image();
   image.src = '/assets/DSniang02.png';
   image.alt = '';
   const caption = document.createElement('strong');
-  caption.textContent = '人，别戳了';
+  caption.textContent = text;
   button.append(image, caption);
   button.addEventListener('click', () => {
-    $('return-merchant').classList.remove('is-highlighted');
+    reminderPulse?.cancel();
+    reminder.classList.remove('is-highlighted');
     button.classList.add('is-retreating');
     const remove = () => { if (checkFish === button) removeCheckFish(); };
     button.addEventListener('animationend', remove, { once: true });
@@ -104,7 +121,14 @@ function showCheckFish() {
   }, { once: true });
   checkFish = button;
   document.body.append(button);
-  $('return-merchant').classList.add('is-highlighted');
+  reminder.classList.add('is-highlighted');
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    reminderPulse = reminder.animate?.([
+      { boxShadow: '0 0 0 1px var(--primary)' },
+      { boxShadow: '0 0 0 4px var(--primary)', filter: 'brightness(1.18)' },
+      { boxShadow: '0 0 0 1px var(--primary)' },
+    ], { duration: 1100, iterations: 3, easing: 'ease-in-out' });
+  }
 }
 
 function resetManualCheck() {
@@ -210,7 +234,8 @@ async function checkPayment() {
   nextCheckAt = Date.now() + (checkDelays[manualChecks - 1] ?? 10000);
   clearTimeout(timer);
   updateCheckButton();
-  if (manualChecks === 3) showCheckFish();
+  const fishMessage = checkFishMessages[manualChecks];
+  if (fishMessage) showCheckFish(fishMessage);
   message('manual-check-status', config.demo ? '正在核对付款…' : '正在核对 DeepSeek 账单…');
   try {
     const update = await api(`/api/orders/${encodeURIComponent(id)}/check`, { method: 'POST', headers: authenticated(), timeout: 140000 });

@@ -283,7 +283,18 @@ async function renderOrder(verified = true) {
           const backdrop = expiredQrBackdrop.getContext('2d');
           if (backdrop) {
             backdrop.imageSmoothingQuality = 'high';
-            backdrop.drawImage(canvas, 0, 0, expiredQrBackdrop.width, expiredQrBackdrop.height);
+            const { width, height } = expiredQrBackdrop;
+            backdrop.drawImage(canvas, 0, 0, width, height);
+            const pixels = backdrop.getImageData(0, 0, width, height);
+            // Use the sampled QR ink as opacity so the quiet zone stays transparent.
+            const { data } = pixels;
+            for (let offset = 0; offset < data.length; offset += 4) {
+              data[offset + 3] = 255 - data[offset];
+              data[offset] = 112;
+              data[offset + 1] = 131;
+              data[offset + 2] = 139;
+            }
+            backdrop.putImageData(pixels, 0, 0);
             expiredQrBackdrop.dataset.orderId = id;
           }
         }

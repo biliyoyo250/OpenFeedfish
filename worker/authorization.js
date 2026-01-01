@@ -9,7 +9,7 @@ const closed = (env, id) => env.DB.prepare("UPDATE account_authorization SET sta
 const expired = () => new ApiError(409, 'AUTH_EXPIRED', '本次授权已结束，请重新运行本机连接助手。');
 const busy = () => new ApiError(409, 'AUTH_BUSY', '账户授权正在处理，请稍后重试。');
 const base64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REJECTED']);
+const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REDIRECT', 'UPSTREAM_REJECTED']);
 export function authorizationDiagnostic(stage, error) {
   const value = { stage: ['initialize', 'exchange', 'account'].includes(stage) ? stage : 'account', code: diagnosticCodes.has(error?.code) ? error.code : 'AUTH_SAVE_FAILED' };
   for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error?.[key])) value[key] = error[key];
@@ -119,7 +119,7 @@ export async function completeAuthorization(env, identity, input, saveSession, f
     const failure = error instanceof ApiError ? error : new ApiError(503, 'AUTH_SAVE_FAILED', '账户连接未能保存，请管理员检查保险库和数据库状态。');
     await recordFailure(env, identity, stage, failure);
     // Only the newly issued grant is used here; never read an existing session.
-    if (token) await fetcher(`${origin}/auth-api/v0/users/logout`, { method: 'POST', headers: { ...platformClientHeaders, 'x-dsh-auth-token': token }, redirect: 'error', signal: AbortSignal.timeout(10000) }).catch(() => {});
+    if (token) await fetcher(`${origin}/auth-api/v0/users/logout`, { method: 'POST', headers: { ...platformClientHeaders, 'x-dsh-auth-token': token }, redirect: 'manual', signal: AbortSignal.timeout(10000) }).catch(() => {});
     throw failure;
   } finally { await closed(env, row.id); }
 }

@@ -117,6 +117,7 @@ test('expiry cancels the pending grant and failed account checks revoke only the
   await startAuthorization(env, owner, input, fetcher);
   await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'code' }, async () => { throw new ApiError(409, 'ACCOUNT_MISMATCH', 'wrong account'); }, fetcher), { code: 'ACCOUNT_MISMATCH' });
   assert.equal(calls.at(-1).url, 'https://platform.deepseek.com/auth-api/v0/users/logout');
+  assert.equal(calls.at(-1).options.redirect, 'manual');
   assert.equal(calls.at(-1).options.headers['x-dsh-auth-token'], 'new-private-dsh-grant-token');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
 });

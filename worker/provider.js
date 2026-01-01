@@ -17,7 +17,11 @@ export async function upstream(path, credentials, body, fetcher = fetch) {
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let response, result;
   try {
-    response = await fetcher(`${origin}${path}`, { method: path.endsWith('/capture') || body !== undefined ? 'POST' : 'GET', headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(12000) });
+    response = await fetcher(`${origin}${path}`, { method: path.endsWith('/capture') || body !== undefined ? 'POST' : 'GET', headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: 'manual', signal: AbortSignal.timeout(12000) });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => {});
+      throw new ApiError(503, 'UPSTREAM_REDIRECT', '收款平台返回了重定向，已停止请求。');
+    }
     if (!response.headers.get('content-type')?.includes('application/json')) {
       if (response.status === 401) throw new ApiError(503, 'SESSION_EXPIRED', '收款账号登录已失效，请联系收款人。');
       throw new ApiError(503, 'UPSTREAM_NOT_JSON', '收款平台未返回可用的接口响应。');

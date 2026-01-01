@@ -15,6 +15,7 @@ const messages = {
   UPSTREAM_NOT_JSON: 'DeepSeek 账户接口未返回 JSON，账户核验未完成。',
   UPSTREAM_PROTOCOL: 'DeepSeek 账户接口响应格式异常。',
   UPSTREAM_HTTP: 'DeepSeek 账户接口返回了 HTTP 错误。',
+  UPSTREAM_REDIRECT: 'DeepSeek 账户接口返回重定向，已停止请求以保护凭证。',
   UPSTREAM_REJECTED: 'DeepSeek 账户接口未接受本次请求。',
   ACCESS_DENIED: '管理权限尚未就绪，请完成 Cloudflare Access 登录后重新加载页面。',
   ADMIN_NETWORK: '管理请求未能完成，请检查网络和 Access 登录状态。',

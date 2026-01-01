@@ -24,11 +24,12 @@ test('cached legacy admin clients cannot create more Cloudflare tests or acquire
   assert.doesNotThrow(() => assertAdminPaymentTransport({ LEGACY_CLOUD_TESTS_ENABLED: 'true' }, '/api/admin/account/test-payment', {}));
 });
 
-test('payment jobs are limited to the fixed account, one CNY tests and scoped order reads', () => {
+test('payment jobs are limited to the fixed account, whole CNY amounts and scoped order reads', () => {
   const input = { ...base(), url: 'https://untrusted.invalid', headers: { Cookie: 'private' }, script: 'private' };
   const job = paymentJob(input, 'fixed'); assert.equal(job.url, undefined); assert.equal(job.headers, undefined); assert.equal(job.script, undefined);
   assert.equal(job.ttlMs, PAYMENT_JOB_TTL);
-  for (const extra of [{ accountId: 'other' }, { amountFen: 200 }, { paymentMethod: 'card' }, { operation: 'evaluate' }, { operation: 'capture', providerOrderId: '../private' }]) assert.throws(() => paymentJob({ ...input, ...extra }, 'fixed'));
+  for (const amountFen of [100, 3700, 10000000]) assert.equal(paymentJob({ ...input, amountFen }, 'fixed').amountFen, amountFen);
+  for (const extra of [{ accountId: 'other' }, ...[0, 101, 10000001, 100.5, '100'].map((amountFen) => ({ amountFen })), { paymentMethod: 'card' }, { operation: 'evaluate' }, { operation: 'capture', providerOrderId: '../private' }]) assert.throws(() => paymentJob({ ...input, ...extra }, 'fixed'));
 });
 
 test('payment response projection strips private data without hiding invalid amount or currency', () => {

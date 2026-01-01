@@ -11,8 +11,9 @@ export function agentPaymentFetcher(env, scope) {
       if (url === 'https://platform.deepseek.com/auth-api/v0/users/current' && options.method === 'GET' && options.body === undefined) operation = 'profile';
       else if (scope?.requestId && url === 'https://platform.deepseek.com/api/v1/payments' && options.method === 'POST') {
         const body = JSON.parse(options.body || 'null'); const info = body?.order_info;
-        if (info?.request_id !== scope.requestId || info.amount !== '1' || info.currency !== 'CNY' || info.payment_method_type !== 'CMB_UNIONPAY' || info.fallback_method_type !== (scope.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY')) throw new Error();
-        operation = 'create'; fields = { requestId: scope.requestId, paymentMethod: scope.paymentMethod, amountFen: 100 };
+        const amountFen = scope.amountFen ?? 100;
+        if (info?.request_id !== scope.requestId || info.amount !== String(amountFen / 100) || info.currency !== 'CNY' || info.payment_method_type !== 'CMB_UNIONPAY' || info.fallback_method_type !== (scope.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY')) throw new Error();
+        operation = 'create'; fields = { requestId: scope.requestId, paymentMethod: scope.paymentMethod, amountFen };
       } else if (scope?.providerOrderId && url === `https://platform.deepseek.com/api/v1/payments/${encodeURIComponent(scope.providerOrderId)}/capture` && options.method === 'POST' && options.body === undefined) { operation = 'capture'; fields = { providerOrderId: scope.providerOrderId }; }
       else if (scope?.providerOrderId && url === 'https://platform.deepseek.com/auth-api/v0/users/get_all_invoice' && options.method === 'GET' && options.body === undefined) { operation = 'invoice'; fields = { providerOrderId: scope.providerOrderId }; }
       else throw new Error();
@@ -26,7 +27,7 @@ export function agentPaymentFetcher(env, scope) {
       }
       return new Response(result.isJson ? JSON.stringify(result.data) : null, { status: result.httpStatus, headers: { ...(result.isJson ? { 'Content-Type': 'application/json' } : {}), ...(result.challenge ? { 'x-amzn-waf-action': result.challenge } : {}) } });
     } catch (error) {
-      if (!(error instanceof ApiError)) throw Object.assign(new ApiError(dispatched ? 503 : 400, dispatched ? 'AGENT_PROTOCOL' : 'INVALID_REQUEST', dispatched ? '浏览器返回的数据未能核对，请检查原账单。' : '请求超出本次浏览器测试范围。'), { creationAttempted: dispatched && operation === 'create' });
+      if (!(error instanceof ApiError)) throw Object.assign(new ApiError(dispatched ? 503 : 400, dispatched ? 'AGENT_PROTOCOL' : 'INVALID_REQUEST', dispatched ? '浏览器返回的数据未能核对，请检查原账单。' : '请求超出本次订单范围。'), { creationAttempted: dispatched && operation === 'create' });
       throw error;
     }
   };

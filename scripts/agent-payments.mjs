@@ -27,7 +27,7 @@ export async function executePaymentJob(page, value, { accountId, checkAccount, 
         try { const value = JSON.parse(raw); token = typeof value === 'string' ? value : value?.value; } catch { token = raw; }
         if (typeof token !== 'string' || !token || token.length > 6000 || /[\r\n\x00]/.test(token)) return { noToken: true };
         const path = job.operation === 'create' ? '/api/v1/payments' : job.operation === 'capture' ? `/api/v1/payments/${encodeURIComponent(job.providerOrderId)}/capture` : '/auth-api/v0/users/get_all_invoice';
-        const body = job.operation === 'create' ? { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: job.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY', amount: '1', currency: 'CNY', request_id: job.requestId }, shumei_device_id: deviceId } : undefined;
+        const body = job.operation === 'create' ? { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: job.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY', amount: String(job.amountFen / 100), currency: 'CNY', request_id: job.requestId }, shumei_device_id: deviceId } : undefined;
         const response = await fetch(path, { method: job.operation === 'invoice' ? 'GET' : 'POST', headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), credentials: 'same-origin', redirect: 'error', signal: AbortSignal.timeout(10000) });
         const isJson = response.headers.get('content-type')?.includes('application/json') === true;
         const challenge = response.headers.get('x-amzn-waf-action') || response.headers.get('cf-mitigated');

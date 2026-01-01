@@ -7,8 +7,8 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 export async function readAgentTestOrder(env, id = null) {
   if (id !== null && (typeof id !== 'string' || !uuid.test(id))) throw new ApiError(400, 'INVALID_ORDER_ID', '测试账单标识无效。');
   const row = id === null
-    ? await env.DB.prepare("SELECT * FROM orders WHERE is_demo=0 AND provider_transport='agent' ORDER BY created_at DESC LIMIT 1").first()
-    : await env.DB.prepare("SELECT * FROM orders WHERE id=? AND is_demo=0 AND provider_transport='agent'").bind(id).first();
+    ? await env.DB.prepare("SELECT * FROM orders WHERE is_demo=0 AND provider_transport='agent' AND is_admin_test=1 ORDER BY created_at DESC LIMIT 1").first()
+    : await env.DB.prepare("SELECT * FROM orders WHERE id=? AND is_demo=0 AND provider_transport='agent' AND is_admin_test=1").bind(id).first();
   if (id !== null && !row) throw new ApiError(404, 'NOT_FOUND', '未找到自托管测试账单。');
   return row ? publicOrder(row) : null;
 }
@@ -49,7 +49,7 @@ export async function createAdminTestPayment(env, identity, body, fetcher = fetc
   const now = Date.now(), id = previous?.retryId || crypto.randomUUID();
   if (!previous) {
     const tokenHash = await hash(await accessToken(id, env.ORDER_TOKEN_SECRET));
-    const inserted = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at,provider_transport) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, key, fingerprint, tokenHash, 100, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', 0, now, now + 900000, transport).run();
+    const inserted = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at,provider_transport,is_admin_test) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)').bind(id, key, fingerprint, tokenHash, 100, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', 0, now, now + 900000, transport).run();
     if (!inserted.meta.changes) return existing();
   }
   try {

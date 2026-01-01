@@ -1,6 +1,6 @@
 import { hash } from './lib.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, validDeviceKey, validPairCode, validCommandId, AGENT_PROTOCOL, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
-import { paymentJob, paymentJobResult, PAYMENT_RPC_TIMEOUT } from '../shared/agent-payment-protocol.js';
+import { paymentJob, paymentJobResult, PAYMENT_RPC_TIMEOUT, maxPaymentAmount } from '../shared/agent-payment-protocol.js';
 
 const reply = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
 const send = (ws, value) => { try { ws.send(typeof value === 'string' || value instanceof ArrayBuffer ? value : JSON.stringify(value)); } catch { /* A disconnected peer cannot receive. */ } };
@@ -42,7 +42,7 @@ export class BrowserAgentRelay {
     if (path === '/status') {
       const device = await this.ctx.storage.get('device');
       const agent = this.live('agent')[0]?.deserializeAttachment();
-      return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, paymentProtocol: agent?.paymentProtocol === 1 ? 1 : 0, name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0 });
+      return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, paymentProtocol: maxPaymentAmount(agent?.paymentProtocol) ? agent.paymentProtocol : 0, name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0 });
     }
     // Private service-binding route; public/device/viewer routes cannot invoke it.
     if (path === '/notify-order' && request.method === 'POST') {
@@ -55,7 +55,8 @@ export class BrowserAgentRelay {
       let job; try { job = paymentJob(await request.json(), this.env.DEEPSEEK_ACCOUNT_ID); } catch { return reply({ ok: false, code: 'AGENT_PROTOCOL', creationAttempted: false }); }
       const agent = this.live('agent')[0];
       if (!agent) return reply({ ok: false, code: 'AGENT_OFFLINE', creationAttempted: false });
-      if (agent.deserializeAttachment().paymentProtocol !== 1) return reply({ ok: false, code: 'AGENT_UPDATE_REQUIRED', creationAttempted: false });
+      const limit = maxPaymentAmount(agent.deserializeAttachment().paymentProtocol);
+      if (!limit || job.operation === 'create' && job.amountFen > limit) return reply({ ok: false, code: 'AGENT_UPDATE_REQUIRED', creationAttempted: false });
       if (this.pendingJobs.size) return reply({ ok: false, code: 'AGENT_BUSY', creationAttempted: false });
       // Do not blockConcurrencyWhile here: the WebSocket result must be able to
       // run while this private Worker request is waiting. No job is resent.
@@ -134,7 +135,7 @@ export class BrowserAgentRelay {
     }
     if (typeof raw !== 'string' || raw.length > 8192) { shut(ws, 1008); return; }
     let value; try { value = JSON.parse(raw); } catch { shut(ws, 1008); return; }
-    if (a.role === 'agent' && value.type === 'capabilities' && value.paymentProtocol === 1) { a.paymentProtocol = 1; ws.serializeAttachment(a); send(ws, { type: 'capabilities', paymentProtocol: 1 }); return; }
+    if (a.role === 'agent' && value.type === 'capabilities' && maxPaymentAmount(value.paymentProtocol)) { a.paymentProtocol = value.paymentProtocol; ws.serializeAttachment(a); send(ws, { type: 'capabilities', paymentProtocol: a.paymentProtocol }); return; }
     if (a.role === 'agent' && value.type === 'payment-job-result' && validCommandId(value.id)) {
       const pending = this.pendingJobs.get(value.id);
       if (pending && pending.connectionId === a.connectionId) pending.finish(value.result);

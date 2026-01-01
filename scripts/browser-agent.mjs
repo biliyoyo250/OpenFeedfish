@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
 import { executePaymentJob } from './agent-payments.mjs';
-import { paymentJob } from '../shared/agent-payment-protocol.js';
+import { paymentJob, PAYMENT_PROTOCOL } from '../shared/agent-payment-protocol.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, VIEWPORT, AGENT_PROTOCOL, AGENT_CLOSE, validDeviceKey } from '../shared/browser-agent-protocol.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -215,7 +215,7 @@ export async function runAgent() {
             if (message.type === 'ready') {
               if (message.protocol !== AGENT_PROTOCOL || message.role !== 'agent') { connection.close(1002); return; }
               expectedId = message.expectedAccountId;
-              send({ type: 'capabilities', paymentProtocol: 1 });
+              send({ type: 'capabilities', paymentProtocol: PAYMENT_PROTOCOL });
               if (!confirmed) { confirmed = true; attempt = 0; console.log('浏览器服务已上线。画面在 /admin 的“打开实时窗口”中，默认不弹出桌面窗口。'); }
               return;
             }

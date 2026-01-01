@@ -81,7 +81,7 @@ function responseFen(value) {
 export async function createPayment(env, input, fetcher = fetch) {
   let credentials;
   const agent = env.PAYMENT_TRANSPORT === 'agent';
-  if (agent && fetcher === fetch) fetcher = agentPaymentFetcher(env, { requestId: input.requestId, paymentMethod: input.paymentMethod });
+  if (agent && fetcher === fetch) fetcher = agentPaymentFetcher(env, { requestId: input.requestId, paymentMethod: input.paymentMethod, amountFen: input.amountFen });
   try { credentials = agent ? {} : await credentialsFor(env); await verifyPaymentAccount(env, credentials, fetcher); }
   catch (error) { error.creationAttempted = false; throw error; }
   const data = await upstream('/api/v1/payments', credentials, { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: input.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY', amount: String(input.amountFen / 100), currency: 'CNY', request_id: input.requestId }, shumei_device_id: credentials.shumeiDeviceId || null }, fetcher);

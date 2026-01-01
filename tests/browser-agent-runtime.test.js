@@ -34,10 +34,18 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     const rpcJob = { type: 'payment-job', id: crypto.randomUUID(), operation: 'profile', accountId: 'fixed' };
     const unsupported = await (await req('/execute', rpcJob)).json(); assert.equal(unsupported.code, 'AGENT_UPDATE_REQUIRED'); assert.equal(unsupported.creationAttempted, false);
     agent.send(JSON.stringify({ type: 'capabilities', paymentProtocol: 1 })); await next(agentMessages, (v) => parsed(v)?.type === 'capabilities');
+    const largerJob = { ...rpcJob, id: crypto.randomUUID(), operation: 'create', requestId: crypto.randomUUID(), paymentMethod: 'alipay', amountFen: 3700 };
+    const oldAgent = await (await req('/execute', largerJob)).json(); assert.equal(oldAgent.code, 'AGENT_UPDATE_REQUIRED'); assert.equal(oldAgent.creationAttempted, false);
     const waitingRpc = req('/execute', rpcJob);
     const job = parsed(await next(agentMessages, (v) => parsed(v)?.type === 'payment-job'));
     agent.send(JSON.stringify({ type: 'payment-job-result', id: job.id, result: { ok: true, creationAttempted: false, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY', token: 'private' } } } } }));
     const rpcResult = await (await waitingRpc).json(); assert.equal(rpcResult.ok, true); assert.deepEqual(rpcResult.data.data.biz_data, { id: 'fixed', currency: 'CNY' });
+    agent.send(JSON.stringify({ type: 'capabilities', paymentProtocol: 2 })); await next(agentMessages, (v) => parsed(v)?.paymentProtocol === 2);
+    assert.equal((await (await req('/status')).json()).paymentProtocol, 2);
+    const largerRequest = req('/execute', largerJob);
+    const largerReceived = parsed(await next(agentMessages, (v) => parsed(v)?.id === largerJob.id)); assert.equal(largerReceived.amountFen, 3700);
+    agent.send(JSON.stringify({ type: 'payment-job-result', id: largerJob.id, result: { ok: true, creationAttempted: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { payment_order_id: 'synthetic-public', amount: '37', currency: 'CNY', url: 'https://payments.example.invalid/code' } } } } }));
+    assert.equal((await (await largerRequest).json()).ok, true);
     const adminHeaders = { Upgrade: 'websocket', 'X-Agent-Admin-Sub': 'approved-admin', 'X-Agent-Admin-Expires': String(Date.now() + 600000) };
     assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Expires': String(Date.now() - 1) })).status, 403);
     const viewer = (await req('/viewer', undefined, adminHeaders)).webSocket; assert.ok(viewer); const viewerMessages = collect(viewer);

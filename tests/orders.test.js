@@ -20,7 +20,7 @@ import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLog
 import { cookieHeader } from '../worker/provider.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 
-function setup() {
+function setup({ migrateAdminTests = true } = {}) {
   const db = new DatabaseSync(':memory:'); db.exec(readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0002_account.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0003_reconciliation.sql', import.meta.url), 'utf8'));
@@ -28,11 +28,38 @@ function setup() {
   db.exec(readFileSync(new URL('../migrations/0005_authorization.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0006_pending_authorization.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0007_agent_transport.sql', import.meta.url), 'utf8'));
+  if (migrateAdminTests) db.exec(readFileSync(new URL('../migrations/0008_admin_test_orders.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
   const create = (body = {}, key = crypto.randomUUID()) => request('/api/orders', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify({ amount: '10.00', paymentMethod: 'wechat', nickname: '小鱼', message: '继续加油', ...body }) });
   return { db, env, request, create };
+}
+
+function publicAgentSetup(t) {
+  const state = setup(); const { env } = state;
+  Object.assign(env, { LOCAL_DEMO: 'false', DEEPSEEK_ACCOUNT_ID: 'fixed', PAYMENTS_ENABLED: 'true', PUBLIC_PAYMENT_TRANSPORT: 'agent', PUBLIC_PAYMENT_METHODS: 'alipay', ORDER_TOKEN_SECRET: 's'.repeat(40), TURNSTILE_SITE_KEY: 'fixture-site', TURNSTILE_SECRET_KEY: 'private-fixture-secret' });
+  const control = { online: true, protocol: 2, jobs: [], failure: null, paid: false, amount: '37' };
+  env.AGENT_RELAY = { idFromName: () => 'fixed-account-browser', get: () => ({ fetch: async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === '/status') return Response.json({ configured: true, online: control.online, paymentProtocol: control.protocol });
+    if (path === '/notify-order') return Response.json({ ok: true });
+    assert.equal(path, '/execute'); const job = await request.json(); control.jobs.push(job);
+    if (job.operation === 'create' && control.failure === 'unsent') return Response.json({ ok: false, code: 'AGENT_BUSY', creationAttempted: false });
+    if (job.operation === 'create' && control.failure === 'uncertain') return Response.json({ ok: true, httpStatus: 202, isJson: false, challenge: 'challenge', creationAttempted: true });
+    const data = job.operation === 'profile' ? { id: 'fixed', currency: 'CNY' }
+      : job.operation === 'create' ? { payment_order_id: 'synthetic-public-order', amount: String(job.amountFen / 100), currency: 'CNY', url: 'https://payments.example.invalid/synthetic-qr', fallback: true }
+        : job.operation === 'capture' ? { order: { id: 'synthetic-public-order', amount: control.amount, currency: 'CNY', status: control.paid ? 'SUCCESS' : 'CREATED' } }
+          : { invoices: { payment_orders: [{ payment_order_id: 'synthetic-public-order', amount: control.amount, currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date().toISOString() }] } };
+    return Response.json({ ok: true, httpStatus: 200, isJson: true, creationAttempted: job.operation === 'create', data: { code: 0, data: { biz_code: 0, biz_data: data } } });
+  } }) };
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(url, 'https://challenges.cloudflare.com/turnstile/v0/siteverify');
+    return Response.json({ success: true, hostname: 'feedfish.example', action: 'create_order' });
+  });
+  const request = (path, options = {}) => worker.fetch(new Request(`https://feedfish.example${path}`, options), env);
+  const create = (body = {}, key = crypto.randomUUID()) => request('/api/orders', { method: 'POST', headers: { Origin: 'https://feedfish.example', 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify({ amount: '37', paymentMethod: 'alipay', nickname: '访客', message: '留言', turnstileToken: 'fixture-token', ...body }) });
+  return { ...state, request, create, control };
 }
 
 function loginSetup() {
@@ -520,6 +547,68 @@ test('demo cannot be enabled on an internet hostname', async () => {
   const payment = await worker.fetch(new Request('https://feedfish.example/api/orders', { method: 'POST', headers: { Origin: 'https://feedfish.example' } }), { ...env, DB: {} });
   assert.equal(payment.status, 503);
 });
+
+test('public Alipay checkout pins amount and transport, saves notes, and reads scheduled settlement without browser polling', async (t) => {
+  const { env, db, request, create, control } = publicAgentSetup(t);
+  const config = await (await request('/api/config')).json();
+  assert.equal(config.paymentsAvailable, true); assert.deepEqual(config.paymentMethods, ['alipay']); assert.equal(config.maxAmount, '100000.00');
+  const response = await create({ transport: 'worker' }); assert.equal(response.status, 201); const order = await response.json();
+  assert.equal(order.amount, '37.00'); assert.equal(order.currency, 'CNY'); assert.match(order.accessToken, /^[a-f0-9]{64}$/);
+  assert.deepEqual(control.jobs.map((job) => job.operation), ['profile', 'create']); assert.equal(control.jobs[1].amountFen, 3700);
+  const row = db.prepare('SELECT * FROM orders WHERE id=?').get(order.id);
+  assert.equal(row.provider_transport, 'agent'); assert.equal(row.is_admin_test, 0); assert.equal(row.nickname, '访客'); assert.equal(row.message, '留言');
+  for (const key of ['nickname', 'message', 'providerOrderId', 'channelOrderId', 'token_hash']) assert.equal(key in order, false);
+  assert.doesNotMatch(JSON.stringify(control.jobs), /private-fixture-secret|nickname|message|Cookie|Authorization/);
+  control.online = false;
+  const headers = { Authorization: `Bearer ${order.accessToken}` };
+  assert.equal((await (await request(`/api/orders/${order.id}`, { headers })).json()).status, 'pending');
+  assert.equal(control.jobs.length, 2, 'public reads do not consume browser tasks even while the executor is offline');
+  control.online = true; control.paid = true; await reconcileOrder(env, row, 'scheduled');
+  const paid = await (await request(`/api/orders/${order.id}`, { headers })).json();
+  assert.equal(paid.status, 'paid'); assert.equal(paid.qrCode, null); assert.equal(control.jobs.length, 4);
+  const saved = db.prepare('SELECT * FROM orders WHERE id=?').get(order.id);
+  assert.equal(saved.provider_status, 'SUCCESS'); assert.ok(saved.paid_at); assert.ok(saved.confirmed_at);
+});
+
+test('public checkout rejects disabled methods, legacy oversized amounts, offline devices and invalid Turnstile before creating', async (t) => {
+  const { env, db, request, create, control } = publicAgentSetup(t);
+  assert.equal((await create({ paymentMethod: 'wechat' })).status, 409);
+  control.protocol = 1;
+  assert.equal((await (await request('/api/config')).json()).maxAmount, '1.00');
+  assert.equal((await create()).status, 400);
+  control.online = false;
+  assert.equal((await (await request('/api/config')).json()).paymentsAvailable, false);
+  assert.equal((await create({ amount: '1' })).status, 503);
+  control.online = true; control.protocol = 2;
+  assert.equal((await create({ turnstileToken: '' })).status, 403);
+  env.PAYMENTS_ENABLED = 'false';
+  assert.equal((await create()).status, 503);
+  assert.equal(control.jobs.length, 0); assert.equal(db.prepare('SELECT count(*) AS n FROM orders').get().n, 0);
+});
+
+test('public retries reuse an unsent reservation but an uncertain creation cannot be replayed', async (t) => {
+  const { db, create, control } = publicAgentSetup(t); const key = crypto.randomUUID();
+  control.failure = 'unsent'; const rejected = await create({}, key);
+  assert.equal(rejected.status, 503); assert.doesNotMatch(JSON.stringify(await rejected.json()), /browser|浏览器|实时窗口|AGENT_BUSY/);
+  const first = db.prepare('SELECT * FROM orders').get(); assert.equal(first.status, 'failed'); assert.equal(first.last_check_error, 'AGENT_BUSY');
+  control.failure = null; const retried = await (await create({}, key)).json(); assert.equal(retried.id, first.id);
+  const replay = await (await create({}, key)).json(); assert.equal(replay.id, first.id);
+  assert.equal(control.jobs.filter((job) => job.operation === 'create').length, 2); assert.equal(db.prepare('SELECT count(*) AS n FROM orders').get().n, 1);
+  const anotherKey = crypto.randomUUID(); control.failure = 'uncertain';
+  assert.equal((await create({}, anotherKey)).status, 503); const before = control.jobs.length;
+  const uncertain = await create({}, anotherKey); assert.equal(uncertain.status, 409); assert.equal(control.jobs.length, before);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM orders WHERE status='unknown'").get().n, 1);
+});
+
+test('admin test migration preserves old agent tests and excludes newer public agent bills from test restoration', async () => {
+  const { env, db, create } = setup({ migrateAdminTests: false });
+  const old = await (await create()).json(); db.prepare("UPDATE orders SET provider_transport='agent',is_demo=0,created_at=1 WHERE id=?").run(old.id);
+  db.exec(readFileSync(new URL('../migrations/0008_admin_test_orders.sql', import.meta.url), 'utf8'));
+  assert.equal(db.prepare('SELECT is_admin_test FROM orders WHERE id=?').get(old.id).is_admin_test, 1);
+  const visitor = await (await create()).json(); db.prepare("UPDATE orders SET provider_transport='agent',is_demo=0,created_at=2 WHERE id=?").run(visitor.id);
+  assert.equal((await readAgentTestOrder(env)).id, old.id);
+  await assert.rejects(readAgentTestOrder(env, visitor.id), { code: 'NOT_FOUND' });
+});
 test('idempotent replay returns one order and same credential; altered body conflicts', async () => {
   const { db, create } = setup(); const key = crypto.randomUUID();
   const first = await create({}, key); assert.equal(first.status, 201); const a = await first.json();
@@ -796,8 +885,8 @@ test('saved agent test status restores only real self-hosted orders, without cre
   const { env, create, db, request } = setup();
   assert.equal(await readAgentTestOrder(env), null);
   const first = await (await create()).json(); const second = await (await create()).json(); const legacy = await (await create()).json();
-  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent',created_at=1 WHERE id=?").run(first.id);
-  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent',created_at=2,status='paid',payment_state='paid' WHERE id=?").run(second.id);
+  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent',is_admin_test=1,created_at=1 WHERE id=?").run(first.id);
+  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent',is_admin_test=1,created_at=2,status='paid',payment_state='paid' WHERE id=?").run(second.id);
   db.prepare('UPDATE orders SET is_demo=0,created_at=3 WHERE id=?').run(legacy.id);
   const latest = await readAgentTestOrder(env);
   assert.equal(latest.id, second.id); assert.equal(latest.status, 'paid'); assert.equal(latest.qrCode, null);

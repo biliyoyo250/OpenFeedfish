@@ -1,5 +1,6 @@
 import { VIEWPORT, validPairCode, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
 import { createAgentStatusWatcher } from './admin-agent-status.js';
+import { maxPaymentAmount } from '../shared/agent-payment-protocol.js';
 import QRCode from 'qrcode';
 
 export function initBrowserAgent() {
@@ -36,7 +37,7 @@ export function initBrowserAgent() {
     onStatus: (data) => {
       const previousOnline = online; const previousPaired = paired;
       online = data.online === true; paired = data.configured === true;
-      paymentReady = data.paymentProtocol === 1; updatePaymentControls();
+      paymentReady = maxPaymentAmount(data.paymentProtocol) > 0; updatePaymentControls();
       el('agent-status').textContent = online ? `${data.name} · 在线` : paired ? `${data.name} · 离线` : '未配对';
       el('agent-open').disabled = !online || [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket?.readyState);
       el('agent-revoke').disabled = !paired;
@@ -146,7 +147,10 @@ export function initBrowserAgent() {
       }
       if (event.data === 'pong') return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === 'order-updated' && data.id === testOrder?.id && !paymentBusy) void orderWatcher.start();
+      if (data.type === 'order-updated') {
+        if (data.id === testOrder?.id && !paymentBusy) void orderWatcher.start();
+        else ordersChanged();
+      }
       if (data.type === 'presence' && !data.online) { clearScreen(); notice('浏览器服务已离线，正在等待重连。'); void refresh(); }
       if (data.type === 'error') notice(data.code === 'AGENT_BUSY' ? '浏览器正在取码或查单，请等待当前任务结束。' : '操作未发送：服务离线或请求无效。');
       if (data.type === 'result' && data.command === 'check-account') {

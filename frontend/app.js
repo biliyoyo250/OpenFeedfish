@@ -12,7 +12,8 @@ const storage = { get() { try { return JSON.parse(sessionStorage.getItem(storage
 function message(id, text = '') { $(id).textContent = text; $(id).hidden = !text; }
 function busy(value) { $('submit-button').disabled = value || !config || (!config.demo && !config.paymentsAvailable); $('submit-label').textContent = value ? '正在准备付款码…' : '生成付款码'; }
 async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, signal: AbortSignal.timeout(20000), headers: { 'Content-Type': 'application/json', ...options.headers } });
+  const { timeout = 20000, ...request } = options;
+  const response = await fetch(path, { ...request, signal: AbortSignal.timeout(timeout), headers: { 'Content-Type': 'application/json', ...request.headers } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) { const error = new Error(body.error?.message || '暂时无法连接，请稍后再试。'); error.status = response.status; error.code = body.error?.code; throw error; }
   return body;
@@ -86,6 +87,7 @@ async function poll(force = false) {
 $('message').addEventListener('input', () => { $('message-count').textContent = `${$('message').value.length} / 300`; });
 form.addEventListener('submit', async (event) => {
   event.preventDefault(); message('form-error');
+  if (!config?.paymentsAvailable) { message('form-error', '收款暂时不可用，请稍后重试。'); return; }
   const amount = $('amount').value.trim();
   if (!/^(?:0|[1-9]\d{0,5})(?:\.0{1,2})?$/.test(amount) || Number(amount) < Number(config.minAmount) || Number(amount) > Number(config.maxAmount)) { message('form-error', `请输入 ${config.minAmount}–${config.maxAmount} CNY，仅支持整数元。`); $('amount').focus(); return; }
   if (config.turnstileSiteKey && !token) { message('form-error', '请先完成人机验证。'); return; }
@@ -94,7 +96,7 @@ form.addEventListener('submit', async (event) => {
   if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
   busy(true);
   try {
-    order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }) });
+    order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 });
     storage.set(order); await renderOrder(); timer = setTimeout(poll, 4000);
   } catch (error) { message('form-error', error.name === 'TimeoutError' ? '请求暂未返回。请点击重试，同一笔请求不会重复创建订单。' : error.message); }
   finally { busy(false); resetCaptcha(); }
@@ -122,7 +124,17 @@ async function loadCaptcha() {
 async function init() {
   try {
     config = await api('/api/config'); $('demo-notice').hidden = !config.demo;
-    if (!config.paymentsAvailable) message('config-error', '收款暂未开放，请晚一点再来。');
+    if (!config.paymentsAvailable) message('config-error', config.paymentsEnabled ? '收款暂时不可用，请稍后重试。' : '收款暂未开放，请晚一点再来。');
+    const methods = config.paymentMethods || ['wechat', 'alipay'];
+    const choices = [...form.querySelectorAll('input[name="paymentMethod"]')];
+    for (const input of choices) {
+      input.disabled = !methods.includes(input.value);
+      if (input.disabled) input.checked = false;
+      input.closest('label').title = input.disabled ? '暂未开放' : '';
+    }
+    if (!choices.some((input) => input.checked && !input.disabled)) { const first = choices.find((input) => !input.disabled); if (first) first.checked = true; }
+    if (Number($('amount').value) > Number(config.maxAmount)) $('amount').value = String(Number(config.maxAmount));
+    $('amount-help').textContent = `支持 ${config.minAmount} 至 ${config.maxAmount} CNY，仅限整数元。`;
     const saved = storage.get();
     if (saved?.id && saved?.accessToken && saved.currency === 'CNY') { order = saved; await renderOrder(false); poll(true); }
     busy(false);

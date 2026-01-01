@@ -5,12 +5,26 @@ import { applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconc
 import { cleanupBrowserLogin } from './browser-login.js';
 import { cleanupAuthorization } from './authorization.js';
 import { cleanupPendingAuthorization } from './pending-authorization.js';
-import { handleAgentPublic } from './browser-agent.js';
+import { handleAgentPublic, agentRequest } from './browser-agent.js';
+import { maxPaymentAmount } from '../shared/agent-payment-protocol.js';
 export { BrowserAgentRelay } from './browser-agent-relay.js';
 
 const localSecret = 'feedfish-local-demo-not-valid-in-production';
 const secretFor = (env, demo) => demo ? localSecret : env.ORDER_TOKEN_SECRET;
-const ready = async (env, demo) => demo || (env.PAYMENTS_ENABLED === 'true' && env.ORDER_TOKEN_SECRET?.length >= 32 && !!env.TURNSTILE_SITE_KEY && !!env.TURNSTILE_SECRET_KEY && await providerReady(env));
+async function paymentConfig(env, demo) {
+  const paymentMethods = demo ? ['wechat', 'alipay'] : (env.PUBLIC_PAYMENT_METHODS || 'wechat,alipay').split(',').map((value) => value.trim()).filter((value, index, all) => ['wechat', 'alipay'].includes(value) && all.indexOf(value) === index);
+  const config = { currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileSiteKey: demo ? '' : env.TURNSTILE_SITE_KEY || '', demo, paymentMethods, paymentsEnabled: demo || env.PAYMENTS_ENABLED === 'true', paymentsAvailable: demo };
+  if (demo || !config.paymentsEnabled || !paymentMethods.length || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET || !env.TURNSTILE_SITE_KEY || !env.TURNSTILE_SECRET_KEY) return config;
+  if (env.PUBLIC_PAYMENT_TRANSPORT === 'agent') {
+    try {
+      const response = await agentRequest(env, '/status'); const status = response.ok ? await response.json() : {};
+      const limit = maxPaymentAmount(status.paymentProtocol);
+      config.maxAmount = formatAmount(limit || 10000000);
+      config.paymentsAvailable = !!env.DEEPSEEK_ACCOUNT_ID && status.configured === true && status.online === true && limit > 0;
+    } catch { /* Offline/unconfigured executors fail closed without creating a bill. */ }
+  } else if (!env.PUBLIC_PAYMENT_TRANSPORT || env.PUBLIC_PAYMENT_TRANSPORT === 'worker') config.paymentsAvailable = await providerReady(env);
+  return config;
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function json(body, status = 200) {
   return Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...(status === 429 ? { 'Retry-After': '60' } : {}) } });
@@ -29,25 +43,34 @@ async function existingResponse(row, fingerprint, env, demo) {
 }
 async function createOrder(request, env, demo) {
   assertOrigin(request, demo);
-  if (!await ready(env, demo)) throw new ApiError(503, 'PAYMENTS_UNAVAILABLE', '收款暂未开放，请晚一点再来。');
+  const config = await paymentConfig(env, demo);
+  if (!config.paymentsEnabled) throw new ApiError(503, 'PAYMENTS_UNAVAILABLE', '收款暂未开放，请晚一点再来。');
   await rateLimit(request, env, 'create', 6, demo);
   const key = request.headers.get('Idempotency-Key') || '';
   if (!uuid.test(key)) throw new ApiError(400, 'INVALID_IDEMPOTENCY_KEY', '请求标识无效，请刷新后重试。');
   const body = await readJson(request); const input = validateOrder(body);
   const keyHash = await hash(key); const fingerprint = await hash(JSON.stringify(input));
   let existing = await env.DB.prepare('SELECT * FROM orders WHERE idempotency_hash=?').bind(keyHash).first();
-  if (existing) return existingResponse(existing, fingerprint, env, demo);
+  const transport = !demo && env.PUBLIC_PAYMENT_TRANSPORT === 'agent' ? 'agent' : 'worker';
+  const canRetry = existing && existing.request_hash === fingerprint && existing.status === 'failed' && existing.is_demo === 0 && existing.provider_transport === transport && !existing.provider_order_id && !existing.provider_status && !existing.qr_code;
+  if (existing && !canRetry) return existingResponse(existing, fingerprint, env, demo);
+  if (!config.paymentsAvailable) throw new ApiError(503, 'PAYMENTS_UNAVAILABLE', '收款暂时不可用，请稍后重试。');
+  if (!config.paymentMethods.includes(input.paymentMethod)) throw new ApiError(409, 'METHOD_UNAVAILABLE', '此支付方式暂未开放，请选择可用方式。');
+  if (input.amountFen > parseAmount(config.maxAmount)) throw new ApiError(400, 'INVALID_AMOUNT', `当前支持 ${config.minAmount}–${config.maxAmount} CNY。`);
   if (!demo) await verifyTurnstile(request, env, body.turnstileToken);
-  const now = Date.now(); const id = crypto.randomUUID(); const token = await accessToken(id, secretFor(env, demo));
-  const insert = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, keyHash, fingerprint, await hash(token), input.amountFen, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', demo ? 1 : 0, now, now + 900000).run();
+  const now = Date.now(); const id = canRetry ? existing.id : crypto.randomUUID(); const token = await accessToken(id, secretFor(env, demo));
+  const insert = canRetry
+    ? await env.DB.prepare("UPDATE orders SET status='creating',payment_state='creating',last_check_error=NULL,expires_at=? WHERE id=? AND status='failed' AND provider_order_id IS NULL AND provider_status IS NULL AND qr_code IS NULL").bind(now + 900000, id).run()
+    : await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at,provider_transport) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, keyHash, fingerprint, await hash(token), input.amountFen, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', demo ? 1 : 0, now, now + 900000, transport).run();
   if (!insert.meta.changes) { existing = await env.DB.prepare('SELECT * FROM orders WHERE idempotency_hash=?').bind(keyHash).first(); return existingResponse(existing, fingerprint, env, demo); }
   try {
-    const payment = demo ? { providerOrderId: `demo-${id}`, qrCode: `feedfish-demo:${id}`, expiresAt: now + 1800000 } : await createPayment(env, { ...input, requestId: id });
+    const payment = demo ? { providerOrderId: `demo-${id}`, qrCode: `feedfish-demo:${id}`, expiresAt: now + 1800000 } : await createPayment(transport === 'agent' ? { ...env, PAYMENT_TRANSPORT: 'agent' } : env, { ...input, requestId: id });
     await env.DB.prepare('UPDATE orders SET status=?,payment_state=?,provider_order_id=?,qr_code=?,payment_url=?,expires_at=? WHERE id=? AND status=?').bind('pending', 'waiting', payment.providerOrderId, payment.qrCode, payment.paymentUrl || null, payment.expiresAt, id, 'creating').run();
   } catch (error) {
     // A timed-out create may have reached the provider. Never retry it automatically.
     const status = error.creationAttempted === false ? 'failed' : 'unknown';
-    await env.DB.prepare('UPDATE orders SET status=?,payment_state=? WHERE id=? AND status=?').bind(status, status, id, 'creating').run();
+    await env.DB.prepare('UPDATE orders SET status=?,payment_state=?,last_check_error=? WHERE id=? AND status=?').bind(status, status, error instanceof ApiError ? error.code : 'UPSTREAM_UNAVAILABLE', id, 'creating').run();
+    if (transport === 'agent') throw new ApiError(503, status === 'failed' ? 'PAYMENT_NOT_READY' : 'ORDER_UNCERTAIN', status === 'failed' ? '暂时无法生成付款码，请稍后重试。' : '暂未确认付款码是否生成。请重试同一请求或联系收款人核对，避免重复下单。');
     throw error instanceof ApiError ? error : new ApiError(503, 'ORDER_UNCERTAIN', '订单暂未确认，请重试同一请求或联系收款人核对。');
   }
   const row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
@@ -63,7 +86,7 @@ async function loadOrder(request, env, id, demo) {
 async function getOrder(request, env, id, demo) {
   await rateLimit(request, env, 'query', 60, demo);
   let row = await loadOrder(request, env, id, demo);
-  if (row.status === 'pending') {
+  if (row.status === 'pending' && row.provider_transport !== 'agent') {
     await reconcileOrder(env, row);
     row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
   }
@@ -76,7 +99,7 @@ export default {
       if (url.pathname.startsWith('/api/browser-agent/')) return await handleAgentPublic(request, env);
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname.startsWith('/api/admin/')) return await handleAdmin(request, env);
       if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
-      if (url.pathname === '/api/config' && request.method === 'GET') return json({ currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileSiteKey: demo ? '' : env.TURNSTILE_SITE_KEY || '', demo, paymentsAvailable: await ready(env, demo) });
+      if (url.pathname === '/api/config' && request.method === 'GET') return json(await paymentConfig(env, demo));
       if (!env.DB) throw new ApiError(503, 'DATABASE_UNAVAILABLE', '服务暂未就绪，请稍后再试。');
       if (Math.random() < 0.02 && ctx?.waitUntil) ctx.waitUntil(env.DB.prepare('DELETE FROM rate_limits WHERE expires_at<?').bind(Date.now()).run().catch(() => {}));
       if (url.pathname === '/api/orders' && request.method === 'POST') return await createOrder(request, env, demo);

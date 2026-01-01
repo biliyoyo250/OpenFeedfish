@@ -63,6 +63,7 @@ legend { padding: 0; }
 .payment-pill input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .payment-pill:hover { background: var(--surface); }
 .payment-pill:has(input:checked) { background: var(--primary-container); color: var(--on-primary-container); }
+.payment-pill:has(input:disabled) { opacity: .4; cursor: default; background: transparent; }
 .payment-pill:has(input:focus-visible) { outline: 3px solid var(--primary); outline-offset: 3px; z-index: 1; }
 .pay-icon { display: block; width: 20px; height: 20px; flex-shrink: 0; object-fit: contain; }
 .selection-mark { width: 14px; height: 14px; margin-left: 1px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; visibility: hidden; }

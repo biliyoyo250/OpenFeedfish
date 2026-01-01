@@ -6,7 +6,7 @@ const lifetime = 2 * 60 * 60 * 1000;
 const rowFor = (env) => env.DB.prepare('SELECT * FROM account_pending_authorization WHERE singleton=1').first();
 const expired = () => new ApiError(409, 'AUTH_EXPIRED', '待核验授权已结束，请重新连接。');
 const busy = () => new ApiError(409, 'AUTH_BUSY', '账户核验正在处理，请稍后重试。');
-const remove = (env, id) => env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=?').bind(id).run();
+const removeOwned = (env, id, owner, lease) => env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=? AND owner_sub=? AND lease_until=?').bind(id, owner, lease).run();
 export async function revokeGrant(credentials, fetcher = fetch) {
   try {
     const response = await fetcher(`${platformOrigin}/auth-api/v0/users/logout`, { method: 'POST', headers: { ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken }, redirect: 'manual', signal: AbortSignal.timeout(10000) });
@@ -51,16 +51,20 @@ export async function verifyPendingAuthorization(env, identity, id, saveSession,
   let credentials;
   try {
     credentials = await unseal(row.sealed_credentials, env.ACCOUNT_ENCRYPTION_KEY);
-    const account = await saveSession(credentials, id);
-    if (!account.pendingCleared) await remove(env, id);
+    const account = await saveSession(credentials, { id, ownerSub: identity.sub, leaseUntil: now + 30000 });
+    if (!account.pendingCleared && !(await removeOwned(env, id, identity.sub, now + 30000)).meta.changes) throw expired();
     return account;
   } catch (error) {
-    if (['SESSION_EXPIRED', 'ACCOUNT_MISMATCH', 'VAULT_UNAVAILABLE'].includes(error.code)) {
-      await remove(env, id);
-      if (credentials) await revokeGrant(credentials, fetcher);
+    if (credentials?.issuedAccount) {
+      error.issuedIdentity = typeof credentials.issuedAccount.id === 'string' && credentials.issuedAccount.id.length > 0;
+      if (['CNY', 'USD'].includes(credentials.issuedAccount.currency)) error.issuedCurrency = credentials.issuedAccount.currency;
+    }
+    if (['SESSION_EXPIRED', 'ACCOUNT_MISMATCH', 'VAULT_UNAVAILABLE', 'AUTH_EXPIRED'].includes(error.code)) {
+      const removed = await removeOwned(env, id, identity.sub, now + 30000);
+      if (removed.meta.changes && credentials) await revokeGrant(credentials, fetcher);
     }
     throw error;
-  } finally { await env.DB.prepare('UPDATE account_pending_authorization SET lease_until=0 WHERE singleton=1 AND id=?').bind(id).run().catch(() => {}); }
+  } finally { await env.DB.prepare('UPDATE account_pending_authorization SET lease_until=0 WHERE singleton=1 AND id=? AND lease_until=?').bind(id, now + 30000).run().catch(() => {}); }
 }
 export async function discardPendingAuthorization(env, identity, id, fetcher = fetch, now = Date.now()) {
   const row = await rowFor(env); owned(row, identity, id, now);

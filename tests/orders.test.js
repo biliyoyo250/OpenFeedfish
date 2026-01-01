@@ -194,6 +194,20 @@ test('pending grants enforce SSO ownership, serialize retries and recover an exp
   assert.equal((await verifyPendingAuthorization(env, owner, nextId, async () => ({ id: 'after-lease' }), fetcher)).id, 'after-lease');
 });
 
+test('the exchange profile is retained privately without copying contact information into pending credentials', async () => {
+  const { env, db, owner, input, fetcher } = authorizationSetup();
+  await startAuthorization(env, owner, input, fetcher);
+  const exchange = async (url, options) => url.endsWith('/auth_exchange') ? Response.json({ code: 0, data: { biz_code: 0, biz_data: { token: 'new-private-dsh-grant-token', user: { id: 'issued-account', currency: 'CNY', email: 'private@example.com', mobile: 'private-mobile', is_api_banned: false } } } }) : fetcher(url, options);
+  await assert.rejects(completeAuthorization(env, owner, { state: input.state, code: 'code' }, async () => { throw new ApiError(503, 'UPSTREAM_NOT_JSON', 'blocked'); }, exchange), error => {
+    assert.equal(error.authorizationDiagnostic.issuedIdentity, true); assert.equal(error.authorizationDiagnostic.issuedCurrency, 'CNY'); return true;
+  });
+  const row = db.prepare('SELECT sealed_credentials FROM account_pending_authorization').get();
+  const stored = await unseal(row.sealed_credentials, env.ACCOUNT_ENCRYPTION_KEY);
+  assert.deepEqual(stored.issuedAccount, { id: 'issued-account', currency: 'CNY', is_api_banned: false });
+  assert.doesNotMatch(JSON.stringify(stored), /private@example|private-mobile/);
+  assert.doesNotMatch(JSON.stringify(await lastAuthorizationFailure(env)), /issued-account|private/);
+});
+
 test('pending promotion rolls back the trusted vault if removing the candidate fails', async () => {
   const { env, db, owner, fetcher } = authorizationSetup();
   const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-pending-token' }, fetcher);
@@ -204,6 +218,21 @@ test('pending promotion rolls back the trusted vault if removing the candidate f
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 1);
   assert.equal((await pendingAuthorizationState(env, owner)).busy, false);
   env.DB.prepare = prepare;
+});
+
+test('a canceled pending grant cannot be promoted by a late account response', async () => {
+  const { env, db, owner, fetcher } = authorizationSetup();
+  const id = await stagePendingAuthorization(env, owner, { dshToken: 'private-pending-token' }, fetcher);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const verification = verifyPendingAuthorization(env, owner, id, (credentials, pending) => importSession(env, credentials, 'owner', Date.now(), async () => { entered(); await gate; return Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY' } } }); }, pending), fetcher);
+  await started;
+  await discardPendingAuthorization(env, owner, id, fetcher, Date.now() + 31000);
+  release();
+  await assert.rejects(verification, { code: 'AUTH_EXPIRED' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_session').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM account_pending_authorization').get().n, 0);
 });
 
 test('expired and discarded pending credentials are removed even when upstream logout is blocked', async () => {

@@ -16,6 +16,8 @@ export function authorizationDiagnostic(stage, error) {
   for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error?.[key])) value[key] = error[key];
   if (['identity', 'currency', 'banned', 'payment'].includes(error?.accountCheck)) value.accountCheck = error.accountCheck;
   if (['captcha', 'challenge'].includes(error?.upstreamChallenge)) value.upstreamChallenge = error.upstreamChallenge;
+  if (typeof error?.issuedIdentity === 'boolean') value.issuedIdentity = error.issuedIdentity;
+  if (['CNY', 'USD'].includes(error?.issuedCurrency)) value.issuedCurrency = error.issuedCurrency;
   return value;
 }
 export async function recordAuthorizationFailure(env, identity, stage, error) {
@@ -117,7 +119,17 @@ export async function completeAuthorization(env, identity, input, saveSession, f
     token = data.token;
     if (Date.now() >= row.expires_at) throw expired();
     stage = 'account';
-    pendingId = await stagePendingAuthorization(env, identity, { dshToken: token, deviceId: '', deviceModel: '', shumeiDeviceId: '' }, fetcher);
+    const credentials = { dshToken: token, deviceId: '', deviceModel: '', shumeiDeviceId: '' };
+    // Keep only account fields useful for verification, never contact/profile data.
+    if (data.user && typeof data.user === 'object') {
+      const issuedAccount = {};
+      if (typeof data.user.id === 'string' && data.user.id.length <= 200) issuedAccount.id = data.user.id;
+      if (['CNY', 'USD'].includes(data.user.currency)) issuedAccount.currency = data.user.currency;
+      if (typeof data.user.is_api_banned === 'boolean') issuedAccount.is_api_banned = data.user.is_api_banned;
+      if (typeof data.user.feature_gates?.PAYMENT === 'boolean') issuedAccount.feature_gates = { PAYMENT: data.user.feature_gates.PAYMENT };
+      credentials.issuedAccount = issuedAccount;
+    }
+    pendingId = await stagePendingAuthorization(env, identity, credentials, fetcher);
     return await verifyPendingAuthorization(env, identity, pendingId, saveSession, fetcher);
   } catch (error) {
     const failure = error instanceof ApiError ? error : new ApiError(503, 'AUTH_SAVE_FAILED', '账户连接未能保存，请管理员检查保险库和数据库状态。');

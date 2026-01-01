@@ -94,15 +94,19 @@ export async function handleAdmin(request, env) {
 }
 // First import may stage a verified session, but orders still require the pinned
 // deployment variable. The conditional upsert locks the first account atomically.
-export async function importSession(env, credentials, actor, now = Date.now(), fetcher = fetch, pendingId) {
+export async function importSession(env, credentials, actor, now = Date.now(), fetcher = fetch, pending) {
   const previous = await env.DB.prepare('SELECT account_id FROM account_session WHERE singleton=1').first();
   const expected = env.DEEPSEEK_ACCOUNT_ID || previous?.account_id;
   const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
   const account = expected ? await verifyAccount({ ...env, DEEPSEEK_ACCOUNT_ID: expected }, credentials, fetcher) : await inspectAccount(credentials, fetcher);
-  const statement = env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET sealed_credentials=excluded.sealed_credentials,status=excluded.status,updated_at=excluded.updated_at,last_checked_at=excluded.last_checked_at,updated_by=excluded.updated_by WHERE account_session.account_id=excluded.account_id').bind(account.id, sealed, 'connected', now, now, actor);
-  const result = pendingId ? (await env.DB.batch([statement, env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=?').bind(pendingId)]))[0] : await statement.run();
-  if (!result.meta.changes) throw new ApiError(409, 'ACCOUNT_MISMATCH', '固定收款账号已锁定，不能导入其他账号的会话。');
+  const time = Date.now();
+  const insertion = pending ? 'SELECT 1,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM account_pending_authorization WHERE id=? AND owner_sub=? AND lease_until=? AND lease_until>? AND expires_at>?)' : 'VALUES (1,?,?,?,?,?,?)';
+  const values = [account.id, sealed, 'connected', now, now, actor];
+  if (pending) values.push(pending.id, pending.ownerSub, pending.leaseUntil, time, time);
+  const statement = env.DB.prepare(`INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) ${insertion} ON CONFLICT(singleton) DO UPDATE SET sealed_credentials=excluded.sealed_credentials,status=excluded.status,updated_at=excluded.updated_at,last_checked_at=excluded.last_checked_at,updated_by=excluded.updated_by WHERE account_session.account_id=excluded.account_id`).bind(...values);
+  const result = pending ? (await env.DB.batch([statement, env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=? AND owner_sub=? AND lease_until=? AND EXISTS (SELECT 1 FROM account_session WHERE account_id=? AND sealed_credentials=?)').bind(pending.id, pending.ownerSub, pending.leaseUntil, account.id, sealed)]))[0] : await statement.run();
+  if (!result.meta.changes) throw new ApiError(409, pending ? 'AUTH_EXPIRED' : 'ACCOUNT_MISMATCH', pending ? '本次核验已取消或超时，请刷新后重试。' : '固定收款账号已锁定，不能导入其他账号的会话。');
   await audit(env, env.DEEPSEEK_ACCOUNT_ID ? 'session_connected' : 'session_staged', actor, now).catch(() => {});
-  return pendingId ? { ...account, pendingCleared: true } : account;
+  return pending ? { ...account, pendingCleared: true } : account;
 }
 async function audit(env, event, actor, now) { await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(event, actor, now).run(); }

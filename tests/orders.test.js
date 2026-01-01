@@ -8,6 +8,7 @@ import { ApiError, parseAmount, formatAmount, isDemo, validateOrder, verifyTurns
 import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization, lastAuthorizationFailure } from '../worker/authorization.js';
 import { accountErrorMessage } from '../frontend/admin-errors.js';
 import { createAdminTestPayment } from '../worker/admin-payments.js';
+import { credentialsFromInput, connectManualSession } from '../worker/manual-session.js';
 import { stagePendingAuthorization, pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization, cleanupPendingAuthorization } from '../worker/pending-authorization.js';
 import { createReceiver } from '../scripts/connect-account.mjs';
 import { verifyAccessToken } from '../worker/access.js';
@@ -363,6 +364,51 @@ test('browser authentication preserves cookie-only sessions and filters origin, 
     assert.equal(options.headers.Authorization, undefined); assert.equal(options.headers.Cookie, 'session=valid');
     return Response.json({ code: 0, data: { biz_code: 0, biz_data: {} } });
   });
+});
+
+test('manual imports accept Cookie-only or Token sessions but cannot forge a trusted exchange binding', async () => {
+  const credentials = credentialsFromInput({ cookie: 'Cookie: web_session=private-cookie==; locale=zh-CN; cf_clearance=not-an-auth-cookie; aws-waf-token=not-an-auth-cookie', dshToken: 'forged', accountBinding: { kind: 'dsh-exchange' }, issuedAccount: { id: 'forged' } });
+  assert.equal(credentials.sessionToken, undefined); assert.equal(credentials.dshToken, undefined); assert.equal(credentials.accountBinding, undefined); assert.equal(credentials.issuedAccount, undefined);
+  assert.equal(cookieHeader(credentials.cookies, '/api/v1/payments'), 'web_session=private-cookie==; locale=zh-CN');
+  assert.ok(credentials.cookies.every(cookie => cookie.domain === 'platform.deepseek.com' && cookie.secure));
+  await upstream('/auth-api/v0/users/current', credentials, undefined, async (_url, options) => { assert.equal(options.headers.Authorization, undefined); assert.match(options.headers.Cookie, /^web_session=/); return Response.json({ code: 0, data: { biz_code: 0, biz_data: {} } }); });
+  assert.equal(credentialsFromInput({ sessionToken: 'Bearer private-web-token-at-least-twenty' }).sessionToken, 'private-web-token-at-least-twenty');
+});
+test('manual imports reject malformed Cookie headers and device injection without echoing credentials', () => {
+  for (const input of [null, [], 1, 'invalid']) assert.throws(() => credentialsFromInput(input), { code: 'INVALID_SESSION' });
+  for (const cookie of ['session=private\r\nOther: header', 'session=private; session=other', 'Set-Cookie: session=private; HttpOnly', 'session=bad value', 'no-equals', 'x'.repeat(6001), ['session=private']]) {
+    assert.throws(() => credentialsFromInput({ cookie }), error => { assert.equal(error.code, 'INVALID_COOKIE'); assert.doesNotMatch(error.message, /private/); return true; });
+  }
+  assert.throws(() => credentialsFromInput({ cookie: 'cf_clearance=proof; aws-waf-token=proof' }), { code: 'INVALID_SESSION' });
+  assert.throws(() => credentialsFromInput({ cookie: 'session=valid', deviceId: 'invalid\r\nheader' }), { code: 'INVALID_DEVICE' });
+});
+test('a blocked manual Cookie import stays encrypted for its owner and preserves the active account until real verification', async () => {
+  const { env, db, user } = loginSetup(); const owner = { sub: 'owner', email: 'owner@example.com' }; env.DEEPSEEK_ACCOUNT_ID = user.id;
+  const existing = { dshToken: 'existing-private-grant' };
+  await importSession(env, existing, owner.email, Date.now(), async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: user } }));
+  const blocked = async () => new Response('private upstream page', { status: 403, headers: { 'Content-Type': 'text/html' } });
+  await assert.rejects(connectManualSession(env, owner, { cookie: 'web_session=private-cookie' }, (credentials, pending) => importSession(env, credentials, owner.email, Date.now(), blocked, pending), blocked), { code: 'UPSTREAM_NOT_JSON' });
+  assert.deepEqual(await credentialsFor(env), existing);
+  const state = await pendingAuthorizationState(env, owner);
+  assert.ok(state.id); assert.equal(await pendingAuthorizationState(env, { sub: 'other' }), null);
+  assert.doesNotMatch(db.prepare('SELECT sealed_credentials FROM account_pending_authorization').get().sealed_credentials, /private-cookie/);
+  await assert.rejects(verifyPendingAuthorization(env, { sub: 'other' }, state.id, () => assert.fail('foreign owner')), { code: 'AUTH_EXPIRED' });
+  const success = async (_url, options) => { assert.equal(options.headers.Cookie, 'web_session=private-cookie'); assert.equal(options.headers.Authorization, undefined); return Response.json({ code: 0, data: { biz_code: 0, biz_data: user } }); };
+  await verifyPendingAuthorization(env, owner, state.id, (credentials, pending) => importSession(env, credentials, owner.email, Date.now(), success, pending), success);
+  assert.equal(await pendingAuthorizationState(env, owner), null);
+  assert.equal(cookieHeader((await credentialsFor(env)).cookies, '/auth-api/v0/users/current'), 'web_session=private-cookie');
+  assert.doesNotMatch(JSON.stringify(db.prepare('SELECT event FROM admin_audit').all()), /private-cookie|existing-private-grant/);
+});
+test('manual candidate mismatch and cancellation remove the candidate without logging the official browser out', async () => {
+  const { env, user } = loginSetup(); const owner = { sub: 'owner', email: 'owner@example.com' }; env.DEEPSEEK_ACCOUNT_ID = user.id;
+  const existing = { dshToken: 'existing-private-grant' };
+  await importSession(env, existing, owner.email, Date.now(), async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: user } }));
+  const other = async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { ...user, id: 'another-account' } } });
+  await assert.rejects(connectManualSession(env, owner, { cookie: 'web_session=other' }, (credentials, pending) => importSession(env, credentials, owner.email, Date.now(), other, pending), () => assert.fail('must not call browser logout')), { code: 'ACCOUNT_MISMATCH' });
+  assert.deepEqual(await credentialsFor(env), existing); assert.equal(await pendingAuthorizationState(env, owner), null);
+  const id = await stagePendingAuthorization(env, owner, credentialsFromInput({ cookie: 'web_session=candidate' }));
+  assert.deepEqual(await discardPendingAuthorization(env, owner, id, () => assert.fail('must not log out official browser')), { ok: true, revoked: null });
+  assert.equal(await pendingAuthorizationState(env, owner), null);
 });
 
 test('login diagnostics expose only the current SSO subject and never browser connection capabilities', async () => {

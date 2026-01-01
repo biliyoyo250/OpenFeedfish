@@ -4,10 +4,13 @@ import { platformOrigin, platformClientHeaders } from './platform-client.js';
 
 const lifetime = 2 * 60 * 60 * 1000;
 const rowFor = (env) => env.DB.prepare('SELECT * FROM account_pending_authorization WHERE singleton=1').first();
-const expired = () => new ApiError(409, 'AUTH_EXPIRED', '待核验授权已结束，请重新连接。');
+const expired = () => new ApiError(409, 'AUTH_EXPIRED', '暂存凭证已结束，请重新导入会话或授权。');
 const busy = () => new ApiError(409, 'AUTH_BUSY', '账户核验正在处理，请稍后重试。');
 const removeOwned = (env, id, owner, lease) => env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=? AND owner_sub=? AND lease_until=?').bind(id, owner, lease).run();
 export async function revokeGrant(credentials, fetcher = fetch) {
+  // Clearing a manually imported web session removes only our encrypted
+  // candidate; it must not log the user out of the official browser session.
+  if (typeof credentials.dshToken !== 'string' || !credentials.dshToken) return false;
   try {
     const response = await fetcher(`${platformOrigin}/auth-api/v0/users/logout`, { method: 'POST', headers: { ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken }, redirect: 'manual', signal: AbortSignal.timeout(10000) });
     if (response.status === 401) { await response.body?.cancel(); return true; }
@@ -27,7 +30,7 @@ export async function cleanupPendingAuthorization(env, fetcher = fetch, now = Da
 }
 export async function assertNoPendingAuthorization(env, now = Date.now()) {
   const row = await rowFor(env);
-  if (row && row.expires_at > now) throw new ApiError(409, 'AUTH_PENDING', '已有加密暂存的授权，请重试账户核验或先取消待核验授权。');
+  if (row && row.expires_at > now) throw new ApiError(409, 'AUTH_PENDING', '已有加密暂存的凭证，请重试账户核验或先清除暂存。');
 }
 export async function pendingAuthorizationState(env, identity, now = Date.now()) {
   const row = await rowFor(env);
@@ -71,5 +74,6 @@ export async function discardPendingAuthorization(env, identity, id, fetcher = f
   if (row.lease_until > now) throw busy();
   const claimed = await env.DB.prepare('DELETE FROM account_pending_authorization WHERE singleton=1 AND id=? AND owner_sub=? AND lease_until<=?').bind(id, identity.sub, now).run();
   if (!claimed.meta.changes) throw busy();
-  return { ok: true, revoked: await revokeGrant(await unseal(row.sealed_credentials, env.ACCOUNT_ENCRYPTION_KEY), fetcher) };
+  const credentials = await unseal(row.sealed_credentials, env.ACCOUNT_ENCRYPTION_KEY);
+  return { ok: true, revoked: credentials.dshToken ? await revokeGrant(credentials, fetcher) : null };
 }

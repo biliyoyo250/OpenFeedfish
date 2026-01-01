@@ -67,14 +67,14 @@ function dateLabel(value) {
 
 function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
-  fields.disabled = !writable;
+  fields.disabled = !writable || Boolean(session?.pendingAuthorization);
   importButton.disabled = fields.disabled;
   const authorizationReady = writable && session.authorizationAvailable;
   const activeLogin = Boolean(session?.authorization && Date.parse(session.authorization.expiresAt) > Date.now());
   const pending = session?.pendingAuthorization;
   loginStart.disabled = !authorizationReady || !activeLogin || Boolean(pending);
   loginCancel.hidden = !activeLogin && !pending;
-  loginCancel.textContent = pending ? '取消待核验授权' : '取消';
+  loginCancel.textContent = pending ? '清除暂存凭证' : '取消授权';
   loginCancel.disabled = !authorizationReady || Boolean(pending?.busy);
   refreshButton.disabled = !writable;
   checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
@@ -155,16 +155,16 @@ function renderSession(data) {
   }
   session = data;
   element('login-state').textContent = data.pendingAuthorization
-    ? `授权已加密暂存。可点击“重试账户核验”，无需重新登录；暂存有效至 ${dateLabel(data.pendingAuthorization.expiresAt)}。`
+    ? `会话凭证已加密暂存，可点击“重试账户核验”，有效至 ${dateLabel(data.pendingAuthorization.expiresAt)}。`
     : data.authorization
     ? `请在 DeepSeek 页面核对账户并授权。有效至 ${dateLabel(data.authorization.expiresAt)}，完成后自动核验并保存。`
-    : '从本机连接助手开始。账户令牌仅由 Cloudflare 接收、核验并加密保存。';
+    : '本地凭证由 Cloudflare 核验并加密保存。Cookie 或 Token 至少填写一项。';
   element('access-error').hidden = true;
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
   element('admin-identity').textContent = data.demo ? '本地后台演示' : `管理员：${data.email || '已验证身份'}`;
   const staged = !data.expectedAccountId && data.account.accountId && !data.demo;
-  const state = data.pendingAuthorization ? ['待核验', 'warning', '官方授权已收到，账户资料尚未核验。暂存会话不会用于创建付款账单。'] : staged ? ['待固定账户', 'warning', '账户身份已确认，凭证已加密保存。固定此账户 ID 后仍需验证支付通道；收款保持关闭。'] : accountStates[data.account.status] || accountStates.unverified;
+  const state = data.pendingAuthorization ? ['待核验', 'warning', '会话凭证已加密暂存，账户资料尚未核验。可重试核验或清除暂存。'] : staged ? ['待固定账户', 'warning', '账户身份已确认，凭证已加密保存。固定此账户 ID 后仍需验证支付通道；收款保持关闭。'] : accountStates[data.account.status] || accountStates.unverified;
   element('account-status').textContent = state[0];
   element('account-status').className = `status-badge ${state[1]}`;
   element('account-description').textContent = data.demo ? '以下为本地演示信息，不代表真实 DeepSeek 账户连接状态。' : state[2];
@@ -269,10 +269,10 @@ async function mutate(path, body, successMessage, sensitive = false) {
     await refresh();
     setNotice(path.endsWith('/discard') && result.revoked === false ? '本站暂存已清除，上游注销未能确认。' : successMessage);
   } catch (error) {
-    if (path === '/api/admin/account/authorize/complete' || path === '/api/admin/account/authorize/retry') await refresh().catch(() => {});
+    if (['/api/admin/account/session', '/api/admin/account/authorize/complete', '/api/admin/account/authorize/retry'].includes(path)) await refresh().catch(() => {});
     // Credential import failures use our own text, never an upstream response that could echo input.
     const message = sensitive ? accountErrorMessage(error) : error.message;
-    const pending = session?.pendingAuthorization ? ' 授权已加密暂存，可点击“重试账户核验”。' : '';
+    const pending = session?.pendingAuthorization ? ' 凭证已加密暂存，可点击“重试账户核验”。' : '';
     setNotice(saved ? `操作已完成，但刷新状态失败。${message}` : message + pending, true);
   } finally {
     busy = false;
@@ -284,15 +284,17 @@ form.addEventListener('submit', (event) => {
   event.preventDefault();
   if (fields.disabled || busy || !form.reportValidity()) return;
   const payload = { sessionToken: element('session-token').value.trim().replace(/^Bearer\s+/i, '') };
+  payload.cookie = element('session-cookie').value.trim();
   for (const [key, id] of [['deviceId', 'device-id'], ['deviceModel', 'device-model'], ['shumeiDeviceId', 'shumei-device-id']]) {
     const value = element(id).value.trim();
     if (value) payload[key] = value;
   }
-  form.reset();
-  if (!payload.sessionToken) {
-    setNotice('请填写登录会话 Token。', true);
+  if (!payload.sessionToken && !payload.cookie) {
+    setNotice('请填写登录 Cookie 或 Token，至少一项。', true);
     return;
   }
+  if (new TextEncoder().encode(JSON.stringify(payload)).length > 8192) { setNotice('凭证内容过长，请只填写所需的 Cookie / Token。', true); return; }
+  form.reset();
   void mutate('/api/admin/account/session', payload, '会话已验证并保存，账户状态已更新。', true);
 });
 
@@ -305,7 +307,7 @@ loginStart.addEventListener('click', () => {
   } catch (error) { setNotice(error.message, true); }
 });
 loginCancel.addEventListener('click', () => {
-  if (!loginCancel.disabled && session?.pendingAuthorization) { void mutate('/api/admin/account/authorize/discard', { id: session.pendingAuthorization.id }, '本站暂存授权已清除。'); return; }
+  if (!loginCancel.disabled && session?.pendingAuthorization) { void mutate('/api/admin/account/authorize/discard', { id: session.pendingAuthorization.id }, '本站暂存凭证已清除。'); return; }
   if (!loginCancel.disabled && session?.authorization) void mutate('/api/admin/account/authorize/cancel', {}, '本次授权已取消。');
 });
 

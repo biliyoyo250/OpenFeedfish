@@ -53,30 +53,29 @@
     </section>
 
     <section class="panel session-panel" aria-labelledby="session-title">
-      <div class="panel-heading"><h2 id="session-title">更新登录会话</h2><a class="official-link" href="https://platform.deepseek.com/sign_in" target="_blank" rel="noopener noreferrer">DeepSeek 官方登录 <span aria-hidden="true">↗</span></a></div>
-      <p class="section-description">在可信设备的项目目录运行 <code>npm run connect-account</code>，打开它显示的本机链接，即可使用已登录的浏览器授权。</p>
-      <div class="login-actions">
-        <button id="login-start" class="button primary" type="button" disabled>前往 DeepSeek 授权</button>
-        <button id="login-cancel" class="button subtle" type="button" hidden>取消</button>
-      </div>
-      <p id="login-state" class="field-help" role="status">本机助手只转交一次授权码，令牌由 Cloudflare 核验并加密保存。</p>
-      <p class="small muted">官方页面会标注 DeepSeek Harness。这次授权用于本站个人集成，是否可充值仍需核验。也可<a href="/admin/receiver.mjs">下载独立助手</a>后使用 Node.js 运行。</p>
-      <details class="manual-session"><summary>手动导入 Token（备用）</summary>
+      <div class="panel-heading"><h2 id="session-title">导入本地登录会话</h2><a class="official-link" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">DeepSeek 官网 <span aria-hidden="true">↗</span></a></div>
+      <p class="section-description">粘贴已登录官网的 Cookie 或 Token，由 Cloudflare 核验固定账户并加密保存。</p>
       <form id="session-form" autocomplete="off">
         <fieldset id="session-fields" disabled>
           <legend class="visually-hidden">导入 DeepSeek 登录会话</legend>
-          <label for="session-token">登录会话 Token <span class="required-label">必填</span></label>
-          <input id="session-token" name="sessionToken" type="password" required maxlength="6000" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="token-help" placeholder="粘贴当前登录会话凭证">
-          <p id="token-help" class="field-help">使用官网请求 Authorization 中的网页登录 Token。由后端验证并加密保存，提交后清空，不回显或存入浏览器存储。</p>
+          <label for="session-cookie">登录 Cookie</label>
+          <input id="session-cookie" name="cookie" type="password" maxlength="6000" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="cookie-help" placeholder="名称=值; 名称=值">
+          <p id="cookie-help" class="field-help">粘贴 Cookie 请求头的一行内容。提交后清空，不回显或保存在浏览器存储。</p>
+          <label for="session-token">登录 Token <span class="optional-label">有 Authorization 时可一并填写</span></label>
+          <input id="session-token" name="sessionToken" type="password" maxlength="6000" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="网页登录 Token（可含 Bearer 前缀）">
+          <p class="field-help">Cookie 或 Token 至少填写一项。</p>
           <details class="device-details"><summary>设备信息 <span>选填；需要与已有会话对应时填写</span></summary><div class="device-fields">
             <div><label for="device-id">设备 ID <span class="optional-label">x-device-id</span></label><input id="device-id" name="deviceId" type="text" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
             <div><label for="device-model">设备名称 <span class="optional-label">x-device-model</span></label><input id="device-model" name="deviceModel" type="text" maxlength="512" autocomplete="off" spellcheck="false"></div>
             <div class="wide"><label for="shumei-device-id">数美设备 ID <span class="optional-label">shumei_device_id</span></label><input id="shumei-device-id" name="shumeiDeviceId" type="password" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
           </div></details>
-          <div class="form-bottom"><p class="small muted">固定账户配置完成后才可开放收款。</p><button id="import-button" class="button primary" type="submit" disabled>验证并保存会话</button></div>
+          <div class="form-bottom"><p class="small muted">核验受阻时加密暂存两小时，可直接重试。</p><button id="import-button" class="button primary" type="submit" disabled>导入并核验</button></div>
         </fieldset>
       </form>
-      </details>
+      <p id="login-state" class="field-help" role="status">凭证仅由 Cloudflare 接收、核验并加密保存。</p>
+      <button id="login-cancel" class="button subtle" type="button" hidden>清除暂存凭证</button>
+      <details class="manual-session"><summary>从哪里复制？</summary><p class="field-help">在已登录的 DeepSeek 充值页按 F12，选择 Network，刷新后找到 users/current 请求。从 Request Headers 复制 Cookie 的值；若有 Authorization，可同时复制到 Token 栏。凭证只粘贴在本页，不要发到聊天。防护验证 Cookie 会自动排除。</p></details>
+      <details class="manual-session"><summary>Harness 授权（备用）</summary><p class="field-help">在可信设备的项目目录运行 <code>npm run connect-account</code>，打开显示的本机链接，再使用已登录浏览器授权。官方页面标注 DeepSeek Harness；也可<a href="/admin/receiver.mjs">下载独立助手</a>后使用 Node.js 运行。</p><button id="login-start" class="button" type="button" disabled>前往 DeepSeek 授权</button></details>
     </section>
 
     <section class="panel orders-panel" aria-labelledby="orders-title">

@@ -8,6 +8,7 @@ import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAu
 import { createAdminTestPayment } from './admin-payments.js';
 import { browserPaymentFetcher } from './browser-payments.js';
 import { startPaymentChallenge, paymentChallengeView, completePaymentChallenge, cancelPaymentChallenge } from './payment-challenge.js';
+import { connectManualSession } from './manual-session.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -113,11 +114,14 @@ export async function handleAdmin(request, env) {
     return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
   }
   if (path === '/api/admin/account/session') {
-    if (typeof body.sessionToken !== 'string' || body.sessionToken.length < 20 || body.sessionToken.length > 6000 || /\s/.test(body.sessionToken)) throw new ApiError(400, 'INVALID_SESSION', '请输入有效的网页登录 token，不包含 Bearer 前缀。');
-    for (const name of ['deviceId', 'deviceModel', 'shumeiDeviceId']) if (body[name] !== undefined && (typeof body[name] !== 'string' || body[name].length > 512 || /[\r\n]/.test(body[name]))) throw new ApiError(400, 'INVALID_DEVICE', '设备信息格式无效。');
-    const credentials = { sessionToken: body.sessionToken, deviceId: body.deviceId || '', deviceModel: body.deviceModel || '', shumeiDeviceId: body.shumeiDeviceId || '' };
-    const account = await importSession(env, credentials, identity.email, now);
-    return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
+    try {
+      const account = await connectManualSession(env, identity, body, (credentials, pending) => importSession(env, credentials, identity.email, now, fetch, pending));
+      return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
+    } catch (error) {
+      const failure = error instanceof ApiError ? error : new ApiError(503, 'AUTH_SAVE_FAILED', '会话导入未完成，请查看后台状态。');
+      await recordAuthorizationFailure(env, identity, 'account', failure);
+      return json({ error: { code: failure.code, message: failure.message, diagnostic: failure.authorizationDiagnostic } }, failure.status);
+    }
   }
   if (path === '/api/admin/account/check') {
     if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '账户核验方式无效。');

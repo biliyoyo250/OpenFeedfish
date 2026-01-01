@@ -1,4 +1,5 @@
 import { accountErrorMessage } from './admin-errors.js';
+import QRCode from 'qrcode';
 const element = (id) => document.getElementById(id);
 const fields = element('session-fields');
 const form = element('session-form');
@@ -10,6 +11,8 @@ const loginStart = element('login-start');
 const loginCancel = element('login-cancel');
 let session = null;
 let busy = false;
+const testButtons = [...document.querySelectorAll('[data-test-method]')];
+const testRequests = new Map();
 const connectionInput = (() => {
   const values = new URLSearchParams(window.location.hash.slice(1));
   if (![...values.keys()].some((key) => key.startsWith('connect_'))) return null;
@@ -70,6 +73,7 @@ function updateControls() {
   checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
   checkButton.textContent = pending ? '重试账户核验' : '验证连接';
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
+  for (const button of testButtons) button.disabled = !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
 }
 
 function lockAccess() {
@@ -287,6 +291,28 @@ loginCancel.addEventListener('click', () => {
 checkButton.addEventListener('click', () => {
   if (!checkButton.disabled && session?.pendingAuthorization) { void mutate('/api/admin/account/authorize/retry', { id: session.pendingAuthorization.id }, '会话已验证并加密保存。', true); return; }
   if (!checkButton.disabled) void mutate('/api/admin/account/check', {}, '连接验证已完成，账户状态已更新。');
+});
+
+for (const button of testButtons) button.addEventListener('click', async () => {
+  if (button.disabled || busy) return;
+  const method = button.dataset.testMethod;
+  if (!testRequests.has(method)) testRequests.set(method, crypto.randomUUID());
+  busy = true; updateControls(); setNotice('正在创建 1 CNY 测试账单…');
+  element('payment-test-result').hidden = true;
+  try {
+    const order = await request('/api/admin/account/test-payment', { paymentMethod: method, requestId: testRequests.get(method) });
+    if (!order.qrCode) throw new Error('这笔测试账单已关闭，请核对最近账单。');
+    element('payment-test-qr').src = await QRCode.toDataURL(order.qrCode, { width: 440, margin: 3, errorCorrectionLevel: 'M' });
+    element('payment-test-description').textContent = `1.00 CNY · ${method === 'wechat' ? '微信支付' : '支付宝'} · 有效至 ${dateLabel(order.expiresAt)}`;
+    element('payment-test-link').hidden = !order.paymentUrl;
+    if (order.paymentUrl) element('payment-test-link').href = order.paymentUrl;
+    element('payment-test-result').hidden = false;
+    await loadOrders(); setNotice('测试码已生成，请核对支付方式与金额。');
+  } catch (error) {
+    const status = Number.isInteger(error.diagnostic?.upstreamStatus) ? `（HTTP ${error.diagnostic.upstreamStatus}）` : '';
+    setNotice(`测试码未生成。${error.message}${status}`, true);
+    await loadOrders();
+  } finally { busy = false; updateControls(); }
 });
 disableButton.addEventListener('click', () => {
   if (!disableButton.disabled && window.confirm('确定停止创建新的赞助订单吗？已有账单仍会继续核对最终结果。')) {

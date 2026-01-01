@@ -7,6 +7,7 @@ import worker from '../worker/index.js';
 import { ApiError, parseAmount, formatAmount, isDemo, validateOrder, verifyTurnstile } from '../worker/lib.js';
 import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization, lastAuthorizationFailure } from '../worker/authorization.js';
 import { accountErrorMessage } from '../frontend/admin-errors.js';
+import { createAdminTestPayment } from '../worker/admin-payments.js';
 import { stagePendingAuthorization, pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization, cleanupPendingAuthorization } from '../worker/pending-authorization.js';
 import { createReceiver } from '../scripts/connect-account.mjs';
 import { verifyAccessToken } from '../worker/access.js';
@@ -542,6 +543,42 @@ test('provider uses observed CNY endpoints, integer yuan, fixed account and pres
 test('provider recognizes expired tokens even in HTTP errors and never leaks raw error text', async () => {
   await assert.rejects(upstream('/auth-api/v0/users/current', { sessionToken: 'private' }, undefined, async () => Response.json({ code: 40003, msg: 'private' }, { status: 401 })), { code: 'SESSION_EXPIRED' });
   await assert.rejects(upstream('/auth-api/v0/users/current', { sessionToken: 'private' }, undefined, async () => new Response('<html>challenge private</html>', { status: 403 })), (error) => error.code === 'UPSTREAM_NOT_JSON' && error.upstreamStatus === 403 && !error.message.includes('private'));
+});
+
+test('admin channel tests create one real CNY bill per request and cannot change the amount', async () => {
+  const { env, db } = setup(); env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.DEEPSEEK_SESSION_TOKEN = 'private-test-token'; env.ORDER_TOKEN_SECRET = 's'.repeat(40);
+  const calls = [], identity = { sub: 'owner' }, requestId = crypto.randomUUID();
+  const fetcher = async (url, options) => { calls.push({ url, options }); return url.endsWith('/current') ? success({ id: 'fixed', currency: 'CNY' }) : success({ payment_order_id: 'test-remote-order', amount: '1', currency: 'CNY', url: 'weixin://wxpay/test-only' }); };
+  const first = await createAdminTestPayment(env, identity, { requestId, paymentMethod: 'wechat', amount: '99999', currency: 'USD' }, fetcher);
+  const second = await createAdminTestPayment(env, identity, { requestId, paymentMethod: 'wechat' }, fetcher);
+  assert.equal(first.id, second.id); assert.equal(first.amount, '1.00'); assert.equal(first.currency, 'CNY'); assert.equal(first.status, 'pending');
+  assert.equal(first.accessToken, undefined); assert.doesNotMatch(JSON.stringify(first), /private-test-token/);
+  assert.equal(JSON.parse(calls.at(-1).options.body).order_info.amount, '1');
+  assert.equal(JSON.parse(calls.at(-1).options.body).order_info.currency, 'CNY');
+  assert.equal(calls.length, 2);
+  const row = db.prepare('SELECT * FROM orders').get(); assert.equal(row.is_demo, 0); assert.equal(row.nickname, '通道测试'); assert.equal(row.amount_fen, 100);
+  await assert.rejects(createAdminTestPayment(env, identity, { requestId, paymentMethod: 'alipay' }, fetcher), { code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+test('an uncertain admin payment test is recorded and never silently recreated', async () => {
+  const { env, db } = setup(); env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.DEEPSEEK_SESSION_TOKEN = 'private-test-token'; env.ORDER_TOKEN_SECRET = 's'.repeat(40);
+  const body = { requestId: crypto.randomUUID(), paymentMethod: 'wechat' }; let calls = 0;
+  const blocked = async (url) => { calls++; return url.endsWith('/current') ? success({ id: 'fixed', currency: 'CNY' }) : new Response('private-block-page', { status: 403 }); };
+  await assert.rejects(createAdminTestPayment(env, { sub: 'owner' }, body, blocked), { code: 'UPSTREAM_NOT_JSON' });
+  await assert.rejects(createAdminTestPayment(env, { sub: 'owner' }, body, blocked), { code: 'ORDER_UNCERTAIN' });
+  assert.equal(calls, 2); const row = db.prepare('SELECT * FROM orders').get();
+  assert.equal(row.status, 'unknown'); assert.equal(row.qr_code, null); assert.equal(row.last_check_error, 'UPSTREAM_NOT_JSON');
+  assert.doesNotMatch(JSON.stringify(row), /private-block-page|private-test-token/);
+});
+
+test('admin payment tests require the pinned account, a strong order key and a known method', async () => {
+  const { env, db } = setup(); const identity = { sub: 'owner' }, requestId = crypto.randomUUID();
+  await assert.rejects(createAdminTestPayment(env, identity, { requestId, paymentMethod: 'wechat' }), { code: 'ACCOUNT_NOT_CONFIGURED' });
+  env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.ORDER_TOKEN_SECRET = 'short';
+  await assert.rejects(createAdminTestPayment(env, identity, { requestId, paymentMethod: 'wechat' }), { code: 'ACCOUNT_NOT_CONFIGURED' });
+  env.ORDER_TOKEN_SECRET = 's'.repeat(40);
+  await assert.rejects(createAdminTestPayment(env, identity, { requestId, paymentMethod: 'card' }), { code: 'INVALID_METHOD' });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 0);
 });
 test('capture status cannot accept mismatched IDs, amounts or currencies', () => {
   const row = { provider_order_id: 'upstream-1', amount_fen: 1000 };

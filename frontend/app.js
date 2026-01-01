@@ -1,9 +1,11 @@
 import QRCode from 'qrcode';
 import { initFish } from './fish.js';
+import { createDebugCheckout } from './debug-checkout.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
 const weChatMethod = form.querySelector('input[name="paymentMethod"][value="wechat"]');
+const debugCheckout = new URLSearchParams(location.search).get('debug') === '1' ? createDebugCheckout() : null;
 const storageKey = 'feedfish-order-v1';
 const inWeChat = /\bMicroMessenger\b/i.test(navigator.userAgent);
 const checkDelays = [0, 0, 3000, 3000, 5000, 5000, 7000, 7000];
@@ -29,10 +31,20 @@ const unavailableImage = $('payment-unavailable-image');
 const unavailableAnimation = '/assets/payment-peek.webp';
 const unavailablePoster = '/assets/payment-peek.png';
 initFish();
-const storage = { get() { try { return JSON.parse(sessionStorage.getItem(storageKey)); } catch { return null; } }, set(value) { try { value ? sessionStorage.setItem(storageKey, JSON.stringify(value)) : sessionStorage.removeItem(storageKey); } catch {} } };
+const storage = {
+  get() {
+    if (debugCheckout) return null;
+    try { return JSON.parse(sessionStorage.getItem(storageKey)); } catch { return null; }
+  },
+  set(value) {
+    if (debugCheckout) return;
+    try { value ? sessionStorage.setItem(storageKey, JSON.stringify(value)) : sessionStorage.removeItem(storageKey); } catch {}
+  },
+};
 function message(id, text = '') { $(id).textContent = text; $(id).hidden = !text; }
 function busy(value) { $('submit-button').disabled = value || !config || (!config.demo && !config.paymentsAvailable); $('submit-label').textContent = value ? '正在准备付款码…' : '生成付款码'; }
 async function api(path, options = {}) {
+  if (debugCheckout) return debugCheckout.request(path, options);
   const { timeout = 20000, ...request } = options;
   const response = await fetch(path, { ...request, signal: AbortSignal.timeout(timeout), headers: { 'Content-Type': 'application/json', ...request.headers } });
   const body = await response.json().catch(() => ({}));
@@ -178,7 +190,7 @@ function renderQrOverlay(pending, unavailable) {
     return;
   }
   const expired = Date.parse(order.expiresAt) <= Date.now();
-  const caption = expired && !config.demo ? '你浪费了15分钟盯着我看' : '';
+  const caption = expired && (!config.demo || debugCheckout) ? '你浪费了15分钟盯着我看' : '';
   if ($('payment-unavailable-caption').textContent !== caption) message('payment-unavailable-caption', caption);
   if (!unavailableImage.hasAttribute('src')) unavailableImage.src = reducedMotion.matches ? unavailablePoster : unavailableAnimation;
 }
@@ -202,6 +214,7 @@ function tick() {
     paymentLink.removeAttribute('href');
     $('switch-wechat').hidden = true;
     $('demo-pay').hidden = true;
+    $('debug-expire').hidden = true;
     $('payment-instruction').textContent = '';
     $('order-status').textContent = '二维码已过期';
     $('payment-title').textContent = '付款码已过期';
@@ -232,6 +245,7 @@ async function renderOrder(verified = true) {
   $('return-merchant').hidden = !showActions;
   if (!showActions) { message('manual-check-status'); removeCheckFish(); }
   $('demo-pay').hidden = !config.demo || !pending || unavailable;
+  $('debug-expire').hidden = !debugCheckout || !pending || unavailable;
   const paymentLink = $('payment-link');
   const weChatUrl = showActions && !unavailable ? weChatPaymentUrl() : null;
   const weChatLink = order.paymentMethod === 'wechat' ? weChatUrl : null;
@@ -362,11 +376,15 @@ form.addEventListener('submit', async (event) => {
     }
     if (config.turnstileSiteKey && !token) { message('form-error', '请先完成人机验证。'); return; }
     const body = { amount, nickname: $('nickname').value.trim(), message: $('message').value.trim(), paymentMethod };
-    const fingerprint = JSON.stringify(body);
-    if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
+    const request = { method: 'POST', body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 };
+    if (!debugCheckout) {
+      const fingerprint = JSON.stringify(body);
+      if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
+      request.headers = { 'Idempotency-Key': requestKey };
+    }
     busy(true);
     try {
-      order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 });
+      order = await api('/api/orders', request);
       storage.set(order);
       resetManualCheck();
       const url = order.paymentMethod === 'wechat' ? weChatPaymentUrl() : null;
@@ -386,16 +404,24 @@ $('switch-wechat').addEventListener('click', () => {
 });
 $('start-again').addEventListener('click', () => {
   if (handoff) { openPaymentPage(); return; }
-  if (order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
+  if (!debugCheckout && order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
   stopPolling(); resetManualCheck(); setQrImage(); order = null; storage.set(null); requestFingerprint = null; requestKey = null;
   renderQrOverlay(true, false);
   $('payment-view').hidden = true; $('success-animation').hidden = true; $('hero').hidden = false; form.hidden = false; message('poll-error'); resetCaptcha(); $('amount').focus();
 });
 $('demo-pay').addEventListener('click', async () => {
   $('demo-pay').disabled = true;
-  try { await api(`/api/orders/${encodeURIComponent(order.id)}/demo-pay`, { method: 'POST', headers: authenticated(), body: '{}' }); await poll(); }
+  try {
+    const update = await api(`/api/orders/${encodeURIComponent(order.id)}/demo-pay`, { method: 'POST', headers: authenticated(), body: '{}' });
+    if (debugCheckout) await applyOrderUpdate(update);
+    else await poll();
+  }
   catch (error) { message('poll-error', error.message); }
   finally { $('demo-pay').disabled = false; }
+});
+$('debug-expire').addEventListener('click', async () => {
+  if (!debugCheckout || order?.status !== 'pending') return;
+  await applyOrderUpdate(debugCheckout.expire());
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(timer); clearTimeout(handoffTimer); }
@@ -414,8 +440,9 @@ async function loadCaptcha() {
   turnstileId = window.turnstile.render('#turnstile', { sitekey: config.turnstileSiteKey, action: 'create_order', theme: 'auto', size: 'flexible', callback: (value) => { token = value; }, 'expired-callback': () => { token = ''; }, 'error-callback': () => { token = ''; message('form-error', '人机验证暂时未完成，请刷新后重试。'); } });
 }
 async function init() {
+  $('debug-notice').hidden = !debugCheckout;
   try {
-    config = await api('/api/config'); $('demo-notice').hidden = !config.demo;
+    config = await api('/api/config'); $('demo-notice').hidden = !config.demo || Boolean(debugCheckout);
     if (!config.paymentsAvailable) message('config-error', config.paymentsEnabled ? '收款暂时不可用，请稍后重试。' : '收款暂未开放，请晚一点再来。');
     const methods = config.paymentMethods || ['wechat', 'alipay'];
     const choices = [...form.querySelectorAll('input[name="paymentMethod"]')];

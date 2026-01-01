@@ -14,6 +14,7 @@
 </head>
 <body>
   <main class="page">
+    <p id="debug-notice" class="debug-notice" role="status" hidden>正在调试模式，不会触发真实交易</p>
     <div id="hero" class="hero">
       <div class="character-controls">
         <button id="fish-button" class="character-button" type="button" aria-label="和小鱼打个招呼">
@@ -86,6 +87,7 @@
         <button id="check-payment" type="button" class="secondary-button">查看付款结果</button>
         <p id="manual-check-status" class="manual-check-status" role="status" hidden></p>
         <button id="demo-pay" type="button" class="secondary-button" hidden>模拟支付成功</button>
+        <button id="debug-expire" type="button" class="secondary-button" hidden>模拟付款码过期</button>
         <button id="start-again" type="button" class="text-button">返回修改</button>
       </div>
     </section>

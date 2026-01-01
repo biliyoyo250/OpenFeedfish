@@ -132,9 +132,13 @@ export default {
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname.startsWith('/api/admin/')) return await handleAdmin(request, env);
       if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
       if (url.pathname === '/api/config' && request.method === 'GET') return json((await paymentConfig(env, demo)).config);
+      const creatingOrder = url.pathname === '/api/orders' && request.method === 'POST';
+      if (creatingOrder && url.searchParams.get('debug') === '1') {
+        throw new ApiError(400, 'DEBUG_ORDER_DISABLED', '调试模式不会创建真实订单。');
+      }
       if (!env.DB) throw new ApiError(503, 'DATABASE_UNAVAILABLE', '服务暂未就绪，请稍后再试。');
       if (Math.random() < 0.02 && ctx?.waitUntil) ctx.waitUntil(env.DB.prepare('DELETE FROM rate_limits WHERE expires_at<?').bind(Date.now()).run().catch(() => {}));
-      if (url.pathname === '/api/orders' && request.method === 'POST') return await createOrder(request, env, demo);
+      if (creatingOrder) return await createOrder(request, env, demo);
       const match = url.pathname.match(/^\/api\/orders\/([0-9a-f-]{36})(\/(?:demo-pay|check))?$/);
       if (match && uuid.test(match[1])) {
         if (!match[2] && request.method === 'GET') return await getOrder(request, env, ctx, match[1], demo);

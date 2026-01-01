@@ -66,6 +66,20 @@ function publicAgentSetup(t) {
   return { ...state, request, create, control };
 }
 
+test('an order creation request marked debug never reaches the live order or browser services', async () => {
+  const response = await worker.fetch(new Request('https://feedfish.example/api/orders?debug=1', {
+    method: 'POST',
+    headers: { Origin: 'https://feedfish.example', 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+    body: JSON.stringify({ amount: '1', paymentMethod: 'alipay' }),
+  }), {
+    LOCAL_DEMO: 'false',
+    get DB() { assert.fail('Debug order attempted to access the database'); },
+    get AGENT_RELAY() { assert.fail('Debug order attempted to access the browser agent'); },
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, 'DEBUG_ORDER_DISABLED');
+});
+
 function loginSetup() {
   const state = setup();
   state.env.BROWSER = {};

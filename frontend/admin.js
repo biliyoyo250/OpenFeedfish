@@ -1,5 +1,6 @@
 import { accountErrorMessage } from './admin-errors.js';
 import { beginLocalAuthorization } from './admin-connection.js';
+import { initBrowserAgent } from './admin-browser.js';
 import QRCode from 'qrcode';
 const element = (id) => document.getElementById(id);
 const fields = element('session-fields');
@@ -437,6 +438,7 @@ refreshButton.addEventListener('click', async () => {
 });
 
 window.addEventListener('pagehide', () => { form.reset(); });
+initBrowserAgent();
 updateControls();
 refresh().then(async () => {
   if (!connectionInput) return;

@@ -9,7 +9,8 @@ import { createAdminTestPayment } from './admin-payments.js';
 import { browserPaymentFetcher } from './browser-payments.js';
 import { startPaymentChallenge, paymentChallengeView, completePaymentChallenge, cancelPaymentChallenge } from './payment-challenge.js';
 import { connectManualSession } from './manual-session.js';
-const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
+import { agentRequest, agentViewer } from './browser-agent.js';
+const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://feedfish.example; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
 async function paymentFailure(env, identity, event, error) {
@@ -37,6 +38,8 @@ export async function handleAdmin(request, env) {
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   }
   if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true }) : agentRequest(env, '/status');
+  if (path === '/api/admin/browser-agent/socket' && request.method === 'GET' && !identity.demo) { assertOrigin(request, false); return agentViewer(request, env, identity); }
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
   if (path === '/api/admin/account/authorize/diagnostics' && request.method === 'GET' && !identity.demo) return json({ failure: await lastAuthorizationFailure(env) });
   if (path === '/api/admin/account/payment-challenge/view' && request.method === 'GET' && !identity.demo) {
@@ -62,6 +65,12 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  if (path === '/api/admin/browser-agent/approve' || path === '/api/admin/browser-agent/revoke') {
+    const approving = path.endsWith('/approve');
+    const response = await agentRequest(env, approving ? '/approve' : '/revoke', approving ? { code: body.code, replace: body.replace === true } : {});
+    if (response.ok) await audit(env, approving ? 'browser_agent_paired' : 'browser_agent_revoked', identity.email, now);
+    return response;
+  }
   if (path === '/api/admin/account/payment-challenge/start') {
     try { return json(await startPaymentChallenge(env, identity)); }
     catch (error) { return paymentFailure(env, identity, 'payment_challenge_start_failed', error instanceof ApiError ? error : new ApiError(503, 'LOGIN_UNAVAILABLE', 'Cloudflare 验证窗口暂不可用，请稍后重试。')); }

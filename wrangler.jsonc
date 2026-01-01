@@ -5,6 +5,8 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "browser": { "binding": "BROWSER" },
+  "durable_objects": { "bindings": [{ "name": "AGENT_RELAY", "class_name": "BrowserAgentRelay" }] },
+  "migrations": [{ "tag": "browser-agent-v1", "new_sqlite_classes": ["BrowserAgentRelay"] }],
   "workers_dev": false,
   "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/api/*", "/admin", "/admin/*"] },
   "vars": { "LOCAL_DEMO": "false", "BROWSER_LOGIN_ENABLED": "false", "TURNSTILE_SITE_KEY": "", "PAYMENTS_ENABLED": "false", "DEEPSEEK_ACCOUNT_ID": "", "ACCESS_TEAM_DOMAIN": "", "ACCESS_AUD": "", "ADMIN_EMAILS": "" },

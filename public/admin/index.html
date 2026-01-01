@@ -52,6 +52,20 @@
       </details>
     </section>
 
+    <section class="panel session-panel" aria-labelledby="agent-title">
+      <div class="panel-heading"><h2 id="agent-title">自托管浏览器</h2><span id="agent-status" class="status-badge neutral">正在检查</span></div>
+      <p class="section-description">Windows / Linux 运行 <code>npm run browser-agent</code>，使用服务端显示的配对码连接。登录与官方验证码可直接在这里操作，会话保存在服务端。</p>
+      <div class="agent-pair"><label class="visually-hidden" for="agent-pair-code">浏览器服务配对码</label><input id="agent-pair-code" maxlength="9" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-2345"><button id="agent-approve" class="button" type="button">配对</button><button id="agent-refresh" class="button subtle" type="button">刷新</button></div>
+      <div class="action-group agent-actions"><button id="agent-open" class="button primary" type="button" disabled>打开实时窗口</button><button id="agent-revoke" class="button subtle danger" type="button" disabled>撤销连接</button></div>
+      <p id="agent-notice" class="field-help" role="status" aria-live="polite">首次运行先执行 <code>npm run browser:install</code> 安装 Chromium。</p>
+      <div id="agent-view" hidden>
+        <div class="agent-toolbar"><button class="button subtle" type="button" data-agent-command="navigate" data-agent-page="top_up" disabled>充值页</button><button class="button subtle" type="button" data-agent-command="navigate" data-agent-page="sign_in" disabled>登录页</button><button class="button subtle" type="button" data-agent-command="reload" disabled>重新加载</button><button class="button" type="button" data-agent-command="check-account" disabled>核验固定账户</button><button id="agent-close" class="button subtle" type="button">关闭窗口</button></div>
+        <canvas id="agent-screen" class="agent-screen" width="1024" height="768" tabindex="0" aria-label="远程 DeepSeek 浏览器画面，可点击、拖动和键盘输入"></canvas>
+        <form id="agent-text-form" class="agent-pair" autocomplete="off"><label class="visually-hidden" for="agent-text">发送到远程输入框的文字</label><input id="agent-text" type="password" maxlength="1024" autocomplete="new-password" spellcheck="false" placeholder="中文、粘贴内容可在此输入，发送后清空" disabled><button id="agent-send-text" class="button" type="submit" disabled>输入文字</button></form>
+        <p class="field-help">先点击画面中的输入框，再输入文字。验证码请手动完成。此窗口连接最长 10 分钟，可重新打开，浏览器登录保留。</p>
+      </div>
+    </section>
+
     <section class="panel session-panel" aria-labelledby="session-title">
       <div class="panel-heading"><h2 id="session-title">连接 DeepSeek 账户</h2><a class="official-link" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">DeepSeek 官网 <span aria-hidden="true">↗</span></a></div>
       <p class="section-description">在本机运行 <code>npm run connect-account</code>，打开显示的本机地址，点击“连接 DeepSeek”。官方授权完成后自动返回，凭证由 Cloudflare 加密保存。</p>

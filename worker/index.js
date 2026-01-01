@@ -5,6 +5,8 @@ import { applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconc
 import { cleanupBrowserLogin } from './browser-login.js';
 import { cleanupAuthorization } from './authorization.js';
 import { cleanupPendingAuthorization } from './pending-authorization.js';
+import { handleAgentPublic } from './browser-agent.js';
+export { BrowserAgentRelay } from './browser-agent-relay.js';
 
 const localSecret = 'feedfish-local-demo-not-valid-in-production';
 const secretFor = (env, demo) => demo ? localSecret : env.ORDER_TOKEN_SECRET;
@@ -71,6 +73,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url); const demo = isDemo(request, env);
     try {
+      if (url.pathname.startsWith('/api/browser-agent/')) return await handleAgentPublic(request, env);
       if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname.startsWith('/api/admin/')) return await handleAdmin(request, env);
       if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
       if (url.pathname === '/api/config' && request.method === 'GET') return json({ currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileSiteKey: demo ? '' : env.TURNSTILE_SITE_KEY || '', demo, paymentsAvailable: await ready(env, demo) });

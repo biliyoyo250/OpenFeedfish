@@ -10,7 +10,7 @@ export async function verifyAccessToken(token, env, keyset) {
     const { payload } = await jwtVerify(token, keyset, { issuer, audience: env.ACCESS_AUD, algorithms: ['RS256'], requiredClaims: ['exp', 'iat', 'sub', 'email'], clockTolerance: 5 });
     const allowed = env.ADMIN_EMAILS.split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
     if (typeof payload.email !== 'string' || !allowed.includes(payload.email.toLowerCase())) throw new Error();
-    return { email: payload.email, sub: payload.sub, demo: false };
+    return { email: payload.email, sub: payload.sub, expiresAt: payload.exp * 1000, demo: false };
   } catch { throw new ApiError(403, 'ACCESS_DENIED', '当前身份无权访问管理后台。'); }
 }
 export async function requireAdmin(request, env) {

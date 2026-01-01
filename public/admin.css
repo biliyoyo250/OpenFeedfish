@@ -86,6 +86,11 @@ summary { font-size: 13px; color: var(--primary); cursor: pointer; width: fit-co
 summary span { font-size: 11px; color: var(--muted); margin-left: 6px; }
 .device-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; }
 .wide { grid-column: 1/-1; }
+.agent-pair { display: flex; align-items: center; gap: 10px; margin: 16px 0; }
+.agent-pair input { flex: 1; }
+.agent-pair #agent-pair-code { max-width: 210px; font-family: Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
+.agent-actions, .agent-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.agent-screen { display: block; width: 100%; height: auto; aspect-ratio: 4/3; background: var(--surface-high); border-radius: 8px; touch-action: none; }
 .form-bottom { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-top: 28px; }
 .form-bottom p { margin: 0; }
 .login-actions { display: flex; gap: 12px; flex-wrap: wrap; }

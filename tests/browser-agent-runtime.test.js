@@ -1,0 +1,55 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { build } from 'esbuild';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { hash } from '../worker/lib.js';
+
+test('Durable Object pairs one browser, relays bounded input/frames, redacts results and revokes live access', async () => {
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const { outputFiles } = await build({ stdin: { contents: `export { BrowserAgentRelay } from './worker/browser-agent-relay.js'; export default { fetch(request,env) { return env.RELAY.get(env.RELAY.idFromName('test')).fetch(request); } };`, resolveDir: root }, bundle: true, write: false, format: 'esm', platform: 'browser', target: 'es2022' });
+  const options = convertV4MiniflareOptions({ name: 'agent-runtime-test', modules: true, script: outputFiles[0].text, compatibilityDate: '2026-10-01', cf: false, bindings: { DEEPSEEK_ACCOUNT_ID: 'fixed' }, durableObjects: { RELAY: { className: 'BrowserAgentRelay', useSQLite: true } } });
+  options.resourceTmpPath = resolve(root, '.local/agent-runtime-tests'); options.telemetry = { enabled: false };
+  await mkdir(options.resourceTmpPath, { recursive: true });
+  const runtime = new Miniflare(options); const sockets = [];
+  const req = (path, body, headers = {}) => runtime.dispatchFetch(`http://localhost${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const collect = (ws) => { const values = []; ws.addEventListener('message', (event) => values.push(event.data)); ws.accept(); sockets.push(ws); return values; };
+  const next = async (values, predicate) => { const deadline = Date.now() + 3000; while (Date.now() < deadline) { const match = values.findIndex(predicate); if (match >= 0) return values.splice(match, 1)[0]; await new Promise((r) => setTimeout(r, 10)); } throw new Error('Expected relay message did not arrive'); };
+  const parsed = (value) => { try { return JSON.parse(value); } catch { return null; } };
+  try {
+    const key = 'T'.repeat(43); const authorization = { Authorization: `Bearer ${key}` };
+    const invalid = await req('/init', { name: 'bad\nname', protocol: 1, keyHash: await hash(key) }); assert.equal(invalid.status, 400);
+    const pairing = await (await req('/init', { name: 'Linux-test', protocol: 1, keyHash: await hash(key) })).json();
+    assert.match(pairing.code, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/); assert.equal(JSON.stringify(pairing).includes(key), false);
+    assert.equal((await req('/pair-status', { id: pairing.id }, { Authorization: `Bearer ${'X'.repeat(43)}` })).status, 410);
+    assert.deepEqual(await (await req('/pair-status', { id: pairing.id }, authorization)).json(), { approved: false });
+    assert.equal((await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).status, 403);
+    assert.equal((await req('/approve', { code: pairing.code })).status, 200);
+    assert.equal((await (await req('/pair-status', { id: pairing.id }, authorization)).json()).approved, true);
+    assert.equal((await req('/agent', undefined, { Authorization: `Bearer ${'X'.repeat(43)}`, Upgrade: 'websocket' })).status, 403);
+    const agent = (await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).webSocket; assert.ok(agent); const agentMessages = collect(agent);
+    const ready = parsed(await next(agentMessages, (v) => parsed(v)?.type === 'ready')); assert.equal(ready.expectedAccountId, 'fixed');
+    const adminHeaders = { Upgrade: 'websocket', 'X-Agent-Admin-Sub': 'approved-admin', 'X-Agent-Admin-Expires': String(Date.now() + 600000) };
+    assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Expires': String(Date.now() - 1) })).status, 403);
+    const viewer = (await req('/viewer', undefined, adminHeaders)).webSocket; assert.ok(viewer); const viewerMessages = collect(viewer);
+    assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Sub': 'other-admin' })).status, 409);
+    await next(agentMessages, (v) => parsed(v)?.type === 'view' && parsed(v).active === true);
+    const command = { id: crypto.randomUUID(), type: 'input', event: 'text', text: 'synthetic-password' };
+    viewer.send(JSON.stringify(command)); assert.deepEqual(parsed(await next(agentMessages, (v) => parsed(v)?.id === command.id)), command);
+    viewer.send(JSON.stringify({ id: crypto.randomUUID(), type: 'evaluate', source: 'private' }));
+    assert.equal(parsed(await next(viewerMessages, (v) => parsed(v)?.type === 'error')).code, 'INVALID_COMMAND');
+    const resultId = crypto.randomUUID();
+    agent.send(JSON.stringify({ type: 'result', id: resultId, command: 'check-account', result: { ok: false, code: 'UPSTREAM_NOT_JSON', httpStatus: 403, cookie: 'private', message: 'synthetic-password' } }));
+    const result = await next(viewerMessages, (v) => parsed(v)?.id === resultId); assert.equal(result.includes('private'), false); assert.equal(result.includes('synthetic-password'), false);
+    assert.deepEqual(parsed(result).result, { ok: false, code: 'UPSTREAM_NOT_JSON', httpStatus: 403 });
+    const frame = new Uint8Array([255, 216, 1, 255, 217]); agent.send(frame);
+    const binary = await next(viewerMessages, (v) => typeof v !== 'string'); assert.deepEqual([...new Uint8Array(binary)], [...frame]);
+    viewer.send(JSON.stringify({ type: 'frame-ack' })); await next(agentMessages, (v) => parsed(v)?.type === 'frame-ack');
+    assert.equal((await (await req('/status')).json()).online, true);
+    assert.equal((await req('/revoke', {})).status, 200);
+    assert.equal((await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).status, 403);
+    assert.equal((await (await req('/status')).json()).configured, false);
+  } finally { for (const socket of sockets) socket.close(); await runtime.dispose(); }
+});

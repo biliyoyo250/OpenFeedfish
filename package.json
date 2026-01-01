@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "connect-account": "node scripts/connect-account.mjs",
+    "browser-agent": "node scripts/browser-agent.mjs",
+    "browser:install": "node scripts/install-browser.mjs",
     "build": "node scripts/build.mjs",
     "dev": "npm run build && wrangler d1 migrations apply feedfish --local && wrangler dev --ip 127.0.0.1 --port 8787 --var LOCAL_DEMO:true",
     "test": "node --test",
@@ -20,6 +22,8 @@
   "devDependencies": {
     "esbuild": "0.25.12",
     "miniflare": "5.20261103.0-beta",
-    "wrangler": "4.157.0"
+    "playwright": "1.64.1",
+    "wrangler": "4.157.0",
+    "ws": "8.22.1"
   }
 }

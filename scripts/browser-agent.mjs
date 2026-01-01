@@ -204,6 +204,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   runAgent().catch((error) => {
     const code = ['PAIRING_EXPIRED', 'PAIRING_BUSY', 'DEVICE_REVOKED', 'INVALID_SERVER', 'SERVER_UNAVAILABLE'].includes(error.message) ? error.message : 'AGENT_START_FAILED';
     console.error(`浏览器服务未能继续（${code}）。首次运行请先 npm run browser:install；重新配对用 npm run browser-agent -- --pair。`);
-    process.exitCode = 1;
+    // Service managers must not turn a required human action into an endless
+    // sequence of pairing requests or rejected device handshakes.
+    process.exitCode = ['PAIRING_EXPIRED', 'PAIRING_BUSY', 'DEVICE_REVOKED', 'INVALID_SERVER', 'AGENT_START_FAILED'].includes(code) ? 78 : 1;
   });
 }

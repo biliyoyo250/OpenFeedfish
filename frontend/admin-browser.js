@@ -1,10 +1,14 @@
 import { VIEWPORT, validPairCode, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
 import { createAgentStatusWatcher } from './admin-agent-status.js';
+import QRCode from 'qrcode';
 
 export function initBrowserAgent() {
   const el = (id) => document.getElementById(id);
   const canvas = el('agent-screen'); const ctx = canvas.getContext('2d');
   let socket; let online = false; let paired = false; let bitmapBusy = false; let dragging = false; let moveAt = 0;
+  let paymentReady = false; let paymentBusy = false; let testOrder = null;
+  const testIds = new Map(); const testButtons = [...document.querySelectorAll('[data-agent-test-method]')];
+  const updatePaymentControls = () => { for (const button of testButtons) button.disabled = !online || !paymentReady || paymentBusy; el('agent-test-check').disabled = !online || !paymentReady || paymentBusy || !testOrder?.id; };
   const values = new URLSearchParams(location.hash.slice(1));
   if (values.has('agent_pair')) {
     const code = values.get('agent_pair');
@@ -17,11 +21,12 @@ export function initBrowserAgent() {
     el('agent-text').disabled = !enabled; el('agent-send-text').disabled = !enabled;
   };
   async function api(path, body) {
-    const response = await fetch(`/api/admin/browser-agent/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json', 'X-Feedfish-Admin': '1' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), cache: 'no-store', redirect: 'error' });
+    const response = await fetch(path.startsWith('/api/admin/') ? path : `/api/admin/browser-agent/${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json', 'X-Feedfish-Admin': '1' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), cache: 'no-store', redirect: 'error' });
     const result = await response.json();
     if (!response.ok) {
       const code = typeof result.error === 'string' ? result.error : result.error?.code;
-      throw new Error(({ PAIRING_EXPIRED: '配对码已失效，请在服务端重新发起。', DEVICE_ALREADY_PAIRED: '已有已配对设备，请先确认是否更换。', ACCESS_DENIED: '请重新通过 Access 登录。', RATE_LIMITED: '操作过于频繁，请稍后重试。' })[code] || '操作未完成，请检查 Access 登录和服务状态。');
+      const message = ({ PAIRING_EXPIRED: '配对码已失效，请在服务端重新发起。', DEVICE_ALREADY_PAIRED: '已有已配对设备，请先确认是否更换。', ACCESS_DENIED: '请重新通过 Access 登录。', RATE_LIMITED: '操作过于频繁，请稍后重试。' })[code] || result.error?.message || '操作未完成，请检查 Access 登录和服务状态。';
+      const error = new Error(message); error.code = code; error.diagnostic = result.error?.diagnostic; throw error;
     }
     return result;
   }
@@ -31,17 +36,47 @@ export function initBrowserAgent() {
     onStatus: (data) => {
       const previousOnline = online; const previousPaired = paired;
       online = data.online === true; paired = data.configured === true;
+      paymentReady = data.paymentProtocol === 1; updatePaymentControls();
       el('agent-status').textContent = online ? `${data.name} · 在线` : paired ? `${data.name} · 离线` : '未配对';
       el('agent-open').disabled = !online || [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket?.readyState);
       el('agent-revoke').disabled = !paired;
       el('agent-approve').disabled = !!data.demo;
-      if (online && !previousOnline) notice('浏览器已在线。点击“打开实时窗口”查看画面。');
+      if (online && !previousOnline) notice(paymentReady ? '浏览器已在线，可核验账户并生成 1 CNY 未付款测试码。' : '浏览器已在线。取码功能需要重启本机 browser-agent 加载更新；无需重新配对或登录。');
       else if (paired && !online && (!previousPaired || previousOnline)) notice('已配对，正在等待浏览器启动；上线后页面会自动更新。');
     },
     onError: (error) => notice(error.message),
     onTimeout: () => notice('尚未收到服务连接，请检查终端日志；点击“刷新”可重新等待。'),
   });
   const refresh = () => statusWatcher.start();
+  async function showTestOrder(order) {
+    testOrder = order;
+    el('agent-test-qr').hidden = !order.qrCode;
+    if (order.qrCode) { el('agent-test-qr').src = await QRCode.toDataURL(order.qrCode, { width: 440, margin: 3 }); el('agent-test-qr').hidden = false; }
+    const labels = { waiting: '等待付款', processing: '平台处理中', paid: '已支付', expired: '二维码已过期', failed: '未成功', refunded: '已退款', chargeback: '已拒付', unknown: '待核对' };
+    el('agent-test-result').textContent = `${order.amount} CNY · ${order.paymentMethod === 'wechat' ? '微信' : '支付宝'} · ${labels[order.paymentState] || '等待确认'}`;
+    el('agent-test-check').hidden = false; updatePaymentControls();
+  }
+  for (const button of testButtons) button.addEventListener('click', async () => {
+    if (button.disabled || paymentBusy) return;
+    const method = button.dataset.agentTestMethod;
+    if (!testIds.has(method)) testIds.set(method, crypto.randomUUID());
+    el('agent-test-qr').hidden = true; el('agent-test-result').textContent = ''; testOrder = null; el('agent-test-check').hidden = true;
+    paymentBusy = true; updatePaymentControls(); notice('正在通过已登录浏览器生成 1 CNY 测试账单，只请求一次，请等待…');
+    try {
+      const order = await api('/api/admin/account/test-payment', { transport: 'agent', paymentMethod: method, requestId: testIds.get(method) });
+      await showTestOrder(order); notice(order.qrCode ? '已生成 1 CNY 测试码。当前仅验证取码，可点击“核对测试账单”查询官方状态。' : '已读取原测试账单，当前没有待付款二维码。');
+    } catch (error) {
+      const status = error.diagnostic?.upstreamStatus;
+      notice(`${error.message}${Number.isInteger(status) ? `（HTTP ${status}）` : ''} 若结果不确定，请核对原账单，避免新建另一笔。`);
+    } finally { paymentBusy = false; updatePaymentControls(); }
+  });
+  el('agent-test-check').addEventListener('click', async () => {
+    if (!testOrder?.id || paymentBusy) return;
+    paymentBusy = true; updatePaymentControls();
+    try { await showTestOrder(await api('/api/admin/account/agent-payment/check', { id: testOrder.id })); notice('已核对官方订单，最近账单也已更新。'); }
+    catch (error) { notice(error.message); }
+    finally { paymentBusy = false; updatePaymentControls(); }
+  });
   function send(message) {
     if (socket?.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(message.type === 'frame-ack' ? message : { ...message, id: crypto.randomUUID() }));
@@ -83,7 +118,7 @@ export function initBrowserAgent() {
       if (event.data === 'pong') return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
       if (data.type === 'presence' && !data.online) { clearScreen(); notice('浏览器服务已离线，正在等待重连。'); void refresh(); }
-      if (data.type === 'error') notice('操作未发送：服务离线或请求无效。');
+      if (data.type === 'error') notice(data.code === 'AGENT_BUSY' ? '浏览器正在取码或查单，请等待当前任务结束。' : '操作未发送：服务离线或请求无效。');
       if (data.type === 'result' && data.command === 'check-account') {
         const messages = { LOGIN_REQUIRED: '请先在画面中登录 DeepSeek。', ACCOUNT_MISMATCH: '登录账户与固定收款账户不一致。', ACCOUNT_INELIGIBLE: '账户币种或资格不符合要求。', SESSION_EXPIRED: '登录已失效，请在画面中重新登录。', AUTH_TOKEN_MISSING: '官方接口未识别登录 Token。', UPSTREAM_NOT_JSON: '本机账户接口仍未返回 JSON。', UPSTREAM_UNAVAILABLE: '本机暂未连通账户接口。' };
         notice(data.result.ok ? '本机浏览器已核对固定账户和 CNY。支付取码与到账尚待验证。' : `${messages[data.result.code] || '账户核验未完成。'}${data.result.httpStatus ? ` HTTP ${data.result.httpStatus}` : ''}`);

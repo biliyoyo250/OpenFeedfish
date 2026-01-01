@@ -1,5 +1,6 @@
 import { hash } from './lib.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, validDeviceKey, validPairCode, validCommandId, AGENT_PROTOCOL, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
+import { paymentJob, paymentJobResult, PAYMENT_RPC_TIMEOUT } from '../shared/agent-payment-protocol.js';
 
 const reply = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
 const send = (ws, value) => { try { ws.send(typeof value === 'string' || value instanceof ArrayBuffer ? value : JSON.stringify(value)); } catch { /* A disconnected peer cannot receive. */ } };
@@ -9,7 +10,7 @@ const codeFor = () => { const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; con
 // One object coordinates the fixed account, not a generic browser proxy. Its
 // durable storage contains pairing metadata and hashes, never frames or input.
 export class BrowserAgentRelay {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env; }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env; this.pendingJobs = new Map(); }
   sockets(role) { return this.ctx.getWebSockets(role); }
   live(role) {
     return this.sockets(role).filter((ws) => {
@@ -41,7 +42,22 @@ export class BrowserAgentRelay {
     if (path === '/status') {
       const device = await this.ctx.storage.get('device');
       const agent = this.live('agent')[0]?.deserializeAttachment();
-      return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0 });
+      return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, paymentProtocol: agent?.paymentProtocol === 1 ? 1 : 0, name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0 });
+    }
+    if (path === '/execute' && request.method === 'POST') {
+      let job; try { job = paymentJob(await request.json(), this.env.DEEPSEEK_ACCOUNT_ID); } catch { return reply({ ok: false, code: 'AGENT_PROTOCOL', creationAttempted: false }); }
+      const agent = this.live('agent')[0];
+      if (!agent) return reply({ ok: false, code: 'AGENT_OFFLINE', creationAttempted: false });
+      if (agent.deserializeAttachment().paymentProtocol !== 1) return reply({ ok: false, code: 'AGENT_UPDATE_REQUIRED', creationAttempted: false });
+      if (this.pendingJobs.size) return reply({ ok: false, code: 'AGENT_BUSY', creationAttempted: false });
+      // Do not blockConcurrencyWhile here: the WebSocket result must be able to
+      // run while this private Worker request is waiting. No job is resent.
+      return new Promise((resolveJob) => {
+        const finish = (value) => { const entry = this.pendingJobs.get(job.id); if (!entry) return; clearTimeout(entry.timer); this.pendingJobs.delete(job.id); resolveJob(reply(paymentJobResult(job, value))); };
+        const timer = setTimeout(() => finish({ ok: false, code: 'AGENT_TIMEOUT', creationAttempted: job.operation === 'create' }), PAYMENT_RPC_TIMEOUT);
+        this.pendingJobs.set(job.id, { agent, connectionId: agent.deserializeAttachment().connectionId, job, finish, timer });
+        send(agent, job);
+      });
     }
     if (path === '/approve' && request.method === 'POST') return this.ctx.blockConcurrencyWhile(async () => {
       const body = await request.json();
@@ -78,7 +94,7 @@ export class BrowserAgentRelay {
       } else if (this.live('viewer').length) return reply({ error: 'VIEWER_BUSY' }, 409);
       const [client, server] = Object.values(new WebSocketPair());
       this.ctx.acceptWebSocket(server, [role]);
-      server.serializeAttachment({ role, expiresAt: Math.min(device.expiresAt, role === 'viewer' ? Math.min(adminExpiresAt, Date.now() + 600000) : device.expiresAt), lastSeen: Date.now(), owner: role === 'viewer' ? request.headers.get('X-Agent-Admin-Sub') : '', bucket: 0, count: 0, framePending: false });
+      server.serializeAttachment({ role, connectionId: crypto.randomUUID(), expiresAt: Math.min(device.expiresAt, role === 'viewer' ? Math.min(adminExpiresAt, Date.now() + 600000) : device.expiresAt), lastSeen: Date.now(), owner: role === 'viewer' ? request.headers.get('X-Agent-Admin-Sub') : '', bucket: 0, count: 0, framePending: false });
       send(server, { type: 'ready', role, protocol: AGENT_PROTOCOL, ...(role === 'agent' ? { expectedAccountId: this.env.DEEPSEEK_ACCOUNT_ID } : {}) });
       if (role === 'agent') this.notifyPresence();
       const agent = this.live('agent')[0];
@@ -111,6 +127,12 @@ export class BrowserAgentRelay {
     }
     if (typeof raw !== 'string' || raw.length > 8192) { shut(ws, 1008); return; }
     let value; try { value = JSON.parse(raw); } catch { shut(ws, 1008); return; }
+    if (a.role === 'agent' && value.type === 'capabilities' && value.paymentProtocol === 1) { a.paymentProtocol = 1; ws.serializeAttachment(a); send(ws, { type: 'capabilities', paymentProtocol: 1 }); return; }
+    if (a.role === 'agent' && value.type === 'payment-job-result' && validCommandId(value.id)) {
+      const pending = this.pendingJobs.get(value.id);
+      if (pending && pending.connectionId === a.connectionId) pending.finish(value.result);
+      return;
+    }
     if (a.role === 'viewer') {
       if (value.type === 'frame-ack') {
         a.framePending = false; ws.serializeAttachment(a);
@@ -118,6 +140,7 @@ export class BrowserAgentRelay {
         return;
       }
       let command; try { command = browserCommand(value); } catch { send(ws, { type: 'error', code: 'INVALID_COMMAND' }); return; }
+      if (this.pendingJobs.size) { send(ws, { type: 'error', code: 'AGENT_BUSY' }); return; }
       const agent = this.live('agent')[0];
       if (!agent) { send(ws, { type: 'error', code: 'AGENT_OFFLINE' }); return; }
       send(agent, command);
@@ -128,6 +151,7 @@ export class BrowserAgentRelay {
   }
   async webSocketClose(ws, code) {
     shut(ws, code === 1006 ? 1000 : code);
+    for (const pending of this.pendingJobs.values()) if (pending.connectionId === ws.deserializeAttachment()?.connectionId) pending.finish({ ok: false, code: 'AGENT_OFFLINE', creationAttempted: pending.job.operation === 'create' });
     if (ws.deserializeAttachment()?.role === 'agent') this.notifyPresence();
     else for (const agent of this.live('agent')) send(agent, { type: 'view', active: this.live('viewer').length > 0 });
   }

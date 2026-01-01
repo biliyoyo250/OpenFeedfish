@@ -1,4 +1,4 @@
-import { ApiError, assertOrigin, readJson, formatAmount } from './lib.js';
+import { ApiError, assertOrigin, readJson, formatAmount, publicOrder } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount, accountFromProfile, queryPayment } from './provider.js';
@@ -10,6 +10,8 @@ import { browserPaymentFetcher } from './browser-payments.js';
 import { startPaymentChallenge, paymentChallengeView, completePaymentChallenge, cancelPaymentChallenge } from './payment-challenge.js';
 import { connectManualSession } from './manual-session.js';
 import { agentRequest, agentViewer } from './browser-agent.js';
+import { agentPaymentFetcher } from './agent-payments.js';
+import { reconcileOrder } from './reconcile.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://feedfish.example; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
@@ -65,6 +67,15 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  if (path === '/api/admin/account/agent-payment/check') {
+    if (typeof body.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.id)) throw new ApiError(400, 'INVALID_ORDER_ID', '测试账单标识无效。');
+    let row = await env.DB.prepare("SELECT * FROM orders WHERE id=? AND is_demo=0 AND provider_transport='agent'").bind(body.id).first();
+    if (!row?.provider_order_id) throw new ApiError(404, 'NOT_FOUND', '该账单尚无可核对的平台订单号。');
+    try { await reconcileOrder(env, row, 'admin-agent'); }
+    catch (error) { return paymentFailure(env, identity, 'agent_payment_check_failed', error); }
+    row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(row.id).first();
+    return json(publicOrder(row));
+  }
   if (path === '/api/admin/browser-agent/approve' || path === '/api/admin/browser-agent/revoke') {
     const approving = path.endsWith('/approve');
     const response = await agentRequest(env, approving ? '/approve' : '/revoke', approving ? { code: body.code, replace: body.replace === true } : {});
@@ -82,19 +93,18 @@ export async function handleAdmin(request, env) {
   }
   if (path === '/api/admin/account/test-payment' || path === '/api/admin/account/check-payment') {
     const checking = path.endsWith('/check-payment');
-    if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '付款码测试方式无效。');
+    if (body.transport !== undefined && !['browser', 'agent'].includes(body.transport)) throw new ApiError(400, 'INVALID_REQUEST', '付款码测试方式无效。');
     try {
       if (checking) {
         if (!body.providerOrderId) throw new ApiError(400, 'INVALID_ORDER_ID', '请输入 DeepSeek 订单号。');
-        const credentials = await credentialsFor(env, true);
-        const fetcher = browserPaymentFetcher(env, credentials, undefined, body.providerOrderId);
+        const fetcher = body.transport === 'agent' ? agentPaymentFetcher(env, { providerOrderId: body.providerOrderId }) : browserPaymentFetcher(env, await credentialsFor(env, true), undefined, body.providerOrderId);
         // Diagnostic only: capture is the official page's status polling API.
         // Never create or import a ledger record from caller-supplied fields.
-        const result = await queryPayment(env, { provider_order_id: body.providerOrderId, amount_fen: 100, created_at: now, paid_at: null }, fetcher);
+        const result = await queryPayment(env, { provider_order_id: body.providerOrderId, provider_transport: body.transport === 'agent' ? 'agent' : 'worker', amount_fen: 100, created_at: now, paid_at: null }, fetcher);
         return json({ ...result, providerOrderId: body.providerOrderId });
       }
       const fetcher = body.transport === 'browser' ? browserPaymentFetcher(env, await credentialsFor(env)) : fetch;
-      return json(await createAdminTestPayment(env, identity, body, fetcher));
+      return json(await createAdminTestPayment(body.transport === 'agent' ? { ...env, PAYMENT_TRANSPORT: 'agent' } : env, identity, body, fetcher));
     }
     catch (error) {
       return paymentFailure(env, identity, checking ? 'payment_check_failed' : 'payment_test_failed', error);

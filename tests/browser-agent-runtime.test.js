@@ -31,6 +31,13 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     assert.equal((await req('/agent', undefined, { Authorization: `Bearer ${'X'.repeat(43)}`, Upgrade: 'websocket' })).status, 403);
     const agent = (await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).webSocket; assert.ok(agent); const agentMessages = collect(agent);
     const ready = parsed(await next(agentMessages, (v) => parsed(v)?.type === 'ready')); assert.equal(ready.expectedAccountId, 'fixed');
+    const rpcJob = { type: 'payment-job', id: crypto.randomUUID(), operation: 'profile', accountId: 'fixed' };
+    const unsupported = await (await req('/execute', rpcJob)).json(); assert.equal(unsupported.code, 'AGENT_UPDATE_REQUIRED'); assert.equal(unsupported.creationAttempted, false);
+    agent.send(JSON.stringify({ type: 'capabilities', paymentProtocol: 1 })); await next(agentMessages, (v) => parsed(v)?.type === 'capabilities');
+    const waitingRpc = req('/execute', rpcJob);
+    const job = parsed(await next(agentMessages, (v) => parsed(v)?.type === 'payment-job'));
+    agent.send(JSON.stringify({ type: 'payment-job-result', id: job.id, result: { ok: true, creationAttempted: false, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY', token: 'private' } } } } }));
+    const rpcResult = await (await waitingRpc).json(); assert.equal(rpcResult.ok, true); assert.deepEqual(rpcResult.data.data.biz_data, { id: 'fixed', currency: 'CNY' });
     const adminHeaders = { Upgrade: 'websocket', 'X-Agent-Admin-Sub': 'approved-admin', 'X-Agent-Admin-Expires': String(Date.now() + 600000) };
     assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Expires': String(Date.now() - 1) })).status, 403);
     const viewer = (await req('/viewer', undefined, adminHeaders)).webSocket; assert.ok(viewer); const viewerMessages = collect(viewer);

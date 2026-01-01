@@ -6,6 +6,8 @@ import { hostname } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
+import { executePaymentJob } from './agent-payments.mjs';
+import { paymentJob } from '../shared/agent-payment-protocol.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, VIEWPORT, AGENT_PROTOCOL, AGENT_CLOSE, validDeviceKey } from '../shared/browser-agent-protocol.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -204,16 +206,25 @@ export async function runAgent() {
           const raw = bytes.toString(); if (raw === 'pong') { lastPong = Date.now(); return; }
           let message; try { message = JSON.parse(raw); } catch { return; }
           const receivedAt = Date.now();
+          if (message.type === 'frame-ack') { credit = true; pump(); return; }
+          if (message.type === 'view') { void view(message.active === true).catch(() => {}); return; }
           if (queued >= 100) return;
           queued++;
           queue = queue.then(async () => {
             if (connection !== socket || connection.readyState !== WebSocket.OPEN) return;
-            if (message.type === 'view') return view(message.active === true);
-            if (message.type === 'frame-ack') { credit = true; pump(); return; }
             if (message.type === 'ready') {
               if (message.protocol !== AGENT_PROTOCOL || message.role !== 'agent') { connection.close(1002); return; }
               expectedId = message.expectedAccountId;
+              send({ type: 'capabilities', paymentProtocol: 1 });
               if (!confirmed) { confirmed = true; attempt = 0; console.log('浏览器服务已上线。画面在 /admin 的“打开实时窗口”中，默认不弹出桌面窗口。'); }
+              return;
+            }
+            if (message.type === 'payment-job') {
+              let job; try { job = paymentJob(message, expectedId); } catch { return; }
+              if (seen.has(job.id)) return;
+              seen.add(job.id); if (seen.size > 512) seen.delete(seen.values().next().value);
+              const result = await executePaymentJob(page, job, { accountId: expectedId, receivedAt, checkAccount: () => checkBrowserAccount(page, expectedId), active: () => !stopping && connection === socket && connection.readyState === WebSocket.OPEN });
+              send({ type: 'payment-job-result', id: job.id, result });
               return;
             }
             if (!viewing) return;

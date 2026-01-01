@@ -1,6 +1,7 @@
 import { ApiError, parseAmount, withUpstreamDiagnostic } from './lib.js';
 import { credentialsFor, accountState } from './vault.js';
 import { platformClientHeaders } from './platform-client.js';
+import { agentPaymentFetcher } from './agent-payments.js';
 const origin = 'https://platform.deepseek.com';
 export async function providerReady(env) {
   const state = await accountState(env);
@@ -79,7 +80,9 @@ function responseFen(value) {
 }
 export async function createPayment(env, input, fetcher = fetch) {
   let credentials;
-  try { credentials = await credentialsFor(env); await verifyPaymentAccount(env, credentials, fetcher); }
+  const agent = env.PAYMENT_TRANSPORT === 'agent';
+  if (agent && fetcher === fetch) fetcher = agentPaymentFetcher(env, { requestId: input.requestId, paymentMethod: input.paymentMethod });
+  try { credentials = agent ? {} : await credentialsFor(env); await verifyPaymentAccount(env, credentials, fetcher); }
   catch (error) { error.creationAttempted = false; throw error; }
   const data = await upstream('/api/v1/payments', credentials, { order_info: { payment_method_type: 'CMB_UNIONPAY', fallback_method_type: input.paymentMethod === 'wechat' ? 'WECHAT' : 'ALIPAY', amount: String(input.amountFen / 100), currency: 'CNY', request_id: input.requestId }, shumei_device_id: credentials.shumeiDeviceId || null }, fetcher);
   if (typeof data?.payment_order_id !== 'string' || !data.payment_order_id || data.payment_order_id.length > 200 || typeof data.url !== 'string' || data.url.length > 4096 || !/^(https:\/\/|weixin:\/\/|alipays:\/\/)/i.test(data.url)) throw new ApiError(502, 'UPSTREAM_ORDER_INVALID', '付款码未能核对，请联系收款人。');
@@ -96,7 +99,9 @@ export function mapPaymentResult(data, row) {
   return { status: statuses[order.status], providerStatus: order.status };
 }
 export async function queryPayment(env, row, fetcher = fetch) {
-  const credentials = await credentialsFor(env, true);
+  const agent = row.provider_transport === 'agent';
+  if (agent && fetcher === fetch) fetcher = agentPaymentFetcher(env, { providerOrderId: row.provider_order_id });
+  const credentials = agent ? {} : await credentialsFor(env, true);
   const data = await upstream(`/api/v1/payments/${encodeURIComponent(row.provider_order_id)}/capture`, credentials, undefined, fetcher);
   const result = mapPaymentResult(data, row);
   // The official invoices UI documents paid_at; capture only guarantees status.

@@ -5,9 +5,10 @@ import { createPayment } from './provider.js';
 export async function createAdminTestPayment(env, identity, body, fetcher = fetch) {
   if (!env.DEEPSEEK_ACCOUNT_ID || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先固定收款账户并配置订单密钥。');
   if (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId)) throw new ApiError(400, 'INVALID_IDEMPOTENCY_KEY', '测试请求标识无效。');
-  const input = validateOrder({ amount: '1', paymentMethod: body.paymentMethod, nickname: '通道测试', message: '管理员验证支付通道' });
+  const transport = env.PAYMENT_TRANSPORT === 'agent' ? 'agent' : 'worker';
+  const input = validateOrder({ amount: '1', paymentMethod: body.paymentMethod, nickname: transport === 'agent' ? '自托管测试' : '通道测试', message: '管理员验证支付通道' });
   const key = await hash(`admin-test:${identity.sub}:${body.requestId}`);
-  const fingerprint = await hash(input.paymentMethod);
+  const fingerprint = await hash(transport === 'agent' ? `agent:${input.paymentMethod}` : input.paymentMethod);
   const existing = async (allowUnsentRetry = false) => {
     const row = await env.DB.prepare('SELECT * FROM orders WHERE idempotency_hash=?').bind(key).first();
     if (!row) return null;
@@ -27,7 +28,7 @@ export async function createAdminTestPayment(env, identity, body, fetcher = fetc
   const now = Date.now(), id = previous?.retryId || crypto.randomUUID();
   if (!previous) {
     const tokenHash = await hash(await accessToken(id, env.ORDER_TOKEN_SECRET));
-    const inserted = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, key, fingerprint, tokenHash, 100, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', 0, now, now + 900000).run();
+    const inserted = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at,provider_transport) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, key, fingerprint, tokenHash, 100, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', 0, now, now + 900000, transport).run();
     if (!inserted.meta.changes) return existing();
   }
   try {

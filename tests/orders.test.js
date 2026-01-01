@@ -27,6 +27,7 @@ function setup() {
   db.exec(readFileSync(new URL('../migrations/0004_browser_login.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0005_authorization.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0006_pending_authorization.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0007_agent_transport.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
@@ -683,6 +684,26 @@ test('an uncertain admin payment test is recorded and never silently recreated',
   assert.equal(calls, 2); const row = db.prepare('SELECT * FROM orders').get();
   assert.equal(row.status, 'unknown'); assert.equal(row.qr_code, null); assert.equal(row.last_check_error, 'UPSTREAM_NOT_JSON');
   assert.doesNotMatch(JSON.stringify(row), /private-block-page|private-test-token/);
+});
+
+test('self-hosted admin bills retain their transport and reuse the same successful request', async () => {
+  const { env, db } = setup(); env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.ORDER_TOKEN_SECRET = 's'.repeat(40); env.PAYMENT_TRANSPORT = 'agent';
+  const body = { requestId: crypto.randomUUID(), paymentMethod: 'wechat' }; let posts = 0;
+  const fetcher = async (url) => url.endsWith('/current') ? success({ id: 'fixed', currency: 'CNY' }) : (posts++, success({ payment_order_id: 'agent-test-order', amount: '1', currency: 'CNY', url: 'weixin://synthetic' }));
+  const first = await createAdminTestPayment(env, { sub: 'owner' }, body, fetcher);
+  const second = await createAdminTestPayment(env, { sub: 'owner' }, body, fetcher);
+  assert.equal(first.id, second.id); assert.equal(posts, 1);
+  const row = db.prepare('SELECT * FROM orders WHERE id=?').get(first.id); assert.equal(row.provider_transport, 'agent'); assert.equal(row.amount_fen, 100);
+  await assert.rejects(createAdminTestPayment({ ...env, PAYMENT_TRANSPORT: undefined }, { sub: 'owner' }, body, fetcher), { code: 'IDEMPOTENCY_CONFLICT' });
+});
+
+test('an uncertain self-hosted creation is retained without another upstream POST', async () => {
+  const { env, db } = setup(); env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.ORDER_TOKEN_SECRET = 's'.repeat(40); env.PAYMENT_TRANSPORT = 'agent';
+  const body = { requestId: crypto.randomUUID(), paymentMethod: 'alipay' }; let posts = 0;
+  const fetcher = async (url) => url.endsWith('/current') ? success({ id: 'fixed', currency: 'CNY' }) : (posts++, new Response(null, { status: 202 }));
+  await assert.rejects(createAdminTestPayment(env, { sub: 'owner' }, body, fetcher), { code: 'UPSTREAM_NOT_JSON' });
+  await assert.rejects(createAdminTestPayment(env, { sub: 'owner' }, body, fetcher), { code: 'ORDER_UNCERTAIN' });
+  assert.equal(posts, 1); const row = db.prepare('SELECT * FROM orders').get(); assert.equal(row.provider_transport, 'agent'); assert.equal(row.status, 'unknown');
 });
 
 test('an admin test rejected before sending reuses its original row and upstream request ID', async () => {

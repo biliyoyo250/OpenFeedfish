@@ -38,7 +38,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px soli
 .character-button { display: grid; place-items: center; width: 128px; height: 128px; padding: 4px; border: 0; border-radius: 32px; background: transparent; transform-origin: center; }
 .character-button:focus-visible { outline: none; }
 .character-button:focus-visible #fish-image { filter: drop-shadow(0 0 4px var(--primary)); }
-#fish-image { display: block; width: 120px; height: 120px; object-fit: contain; transform-origin: center; user-select: none; pointer-events: none; }
+#fish-image { display: block; width: 120px; height: 120px; object-fit: contain; transform: scaleX(-1); transform-origin: center; user-select: none; pointer-events: none; }
 .icon-button { position: absolute; top: 74px; left: calc(100% + 12px); display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; color: var(--on-surface-variant); background: transparent; }
 .icon-button:hover, .icon-button[aria-pressed="true"] { background: var(--surface); }
 .icon-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -126,6 +126,7 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 .nickname-dialog::backdrop { background: #0007; }
 .nickname-dialog>img { display: block; width: 104px; height: 104px; object-fit: contain; margin: 0 auto; }
 #nickname-dialog>img { border-radius: 16px; }
+#wechat-channel-dialog>img { transform: scaleX(-1); }
 .nickname-dialog h2 { margin: 16px 0 24px; }
 .nickname-dialog-actions { display: flex; gap: 12px; }
 .nickname-dialog-actions>button { flex: 1; }

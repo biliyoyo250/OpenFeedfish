@@ -122,7 +122,7 @@ function showCheckFish(text) {
   button.className = 'payment-check-fish';
   button.setAttribute('aria-label', `${text}。点击关闭小鱼提示`);
   const image = new Image();
-  image.src = '/assets/logo.png';
+  image.src = '/assets/DSniang02.png';
   image.alt = '';
   const caption = document.createElement('strong');
   caption.textContent = text;

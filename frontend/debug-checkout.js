@@ -35,7 +35,7 @@ export function createDebugCheckout() {
         paymentMethod,
         status: 'pending',
         paymentState: 'waiting',
-        qrCode: `FeedFish 调试二维码 · ${id}`,
+        qrCode: 'https://example.com/',
         expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       };
       return { ...order };

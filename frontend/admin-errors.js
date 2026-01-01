@@ -3,6 +3,7 @@ const messages = {
   INVALID_COOKIE: 'Cookie 格式无效，请只复制 Cookie 请求头的一行内容。',
   INVALID_DEVICE: '设备信息格式无效。',
   BODY_TOO_LARGE: '凭证内容过长，请只填写所需的 Cookie / Token。',
+  AUTH_TOKEN_MISSING: 'DeepSeek 未收到有效的鉴权 Token。请导入官网 Local Storage 中的 userToken，或请求头的 Authorization。',
   PAYMENT_DEVICE_UNAVAILABLE: '未能取得官网 SDK 的设备信息，未发起付款请求。',
   PAYMENT_VERIFICATION_REQUIRED: '官网浏览器验证未完成，未发起付款请求。',
   BROWSER_NOT_CONFIGURED: '云浏览器或固定账户尚未配置。',
@@ -46,6 +47,7 @@ export function accountErrorMessage(error) {
   const check = Object.hasOwn(checks, diagnostic?.accountCheck) ? checks[diagnostic.accountCheck] : null;
   if (check) details.push(check);
   if (['captcha', 'challenge'].includes(diagnostic?.upstreamChallenge)) details.push('上游人机验证');
+  if (diagnostic?.credentialMode === 'cookie') details.push('仅有 Cookie');
   if (Object.hasOwn(messages, error?.code)) details.push(error.code);
   return details.length ? `${message}（${details.join(' · ')}）` : message;
 }

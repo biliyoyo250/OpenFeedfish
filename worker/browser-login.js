@@ -360,7 +360,8 @@ export async function runInAccountBrowser(env, credentials, browser, operation, 
     return error;
   };
   if (result.wrongOrigin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止账户请求。');
-  if (result.httpStatus === 401 || result.code === 40002 || result.code === 40003) throw diagnostic(new ApiError(503, 'SESSION_EXPIRED', 'DeepSeek 未接受保存的账户授权。'));
+  if (result.httpStatus === 401 || result.code === 40003) throw diagnostic(new ApiError(503, 'SESSION_EXPIRED', 'DeepSeek 未接受保存的账户授权。'));
+  if (result.code === 40002) throw diagnostic(Object.assign(new ApiError(503, 'AUTH_TOKEN_MISSING', 'DeepSeek 未识别到账户 Token，账户核验未完成。'), { credentialMode: 'dsh' }));
   if (!result.isJson) throw diagnostic(new ApiError(503, 'UPSTREAM_NOT_JSON', '云浏览器未取得 JSON；请管理员检查官方页面是否要求人机验证。'));
   if (result.httpStatus < 200 || result.httpStatus >= 300 || result.code !== 0 || result.bizCode !== 0) throw diagnostic(new ApiError(503, 'UPSTREAM_REJECTED', 'DeepSeek 未接受云浏览器中的账户请求。'));
   const account = accountFromProfile(result.user);

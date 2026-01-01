@@ -219,6 +219,7 @@ test('a device script already in flight is awaited without replacing or loading 
 test('browser checks reject challenges, expired grants, wrong accounts and unavailable CNY permissions', async () => {
   const cases = [
     [() => new Response('private challenge body', { status: 403, headers: { 'x-amzn-waf-action': 'challenge' } }), 'UPSTREAM_NOT_JSON'],
+    [() => Response.json({ code: 40002 }), 'AUTH_TOKEN_MISSING'],
     [() => Response.json({ code: 40003 }), 'SESSION_EXPIRED'],
     [() => new Response('', { status: 401 }), 'SESSION_EXPIRED'],
     ...[

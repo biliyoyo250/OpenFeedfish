@@ -373,9 +373,12 @@ test('manual imports accept Cookie-only or Token sessions but cannot forge a tru
   assert.ok(credentials.cookies.every(cookie => cookie.domain === 'platform.deepseek.com' && cookie.secure));
   await upstream('/auth-api/v0/users/current', credentials, undefined, async (_url, options) => { assert.equal(options.headers.Authorization, undefined); assert.match(options.headers.Cookie, /^web_session=/); return Response.json({ code: 0, data: { biz_code: 0, biz_data: {} } }); });
   assert.equal(credentialsFromInput({ sessionToken: 'Bearer private-web-token-at-least-twenty' }).sessionToken, 'private-web-token-at-least-twenty');
+  const token = 'private-web-token-at-least-twenty';
+  for (const sessionToken of [token, `Authorization: Bearer ${token}`, JSON.stringify(token), JSON.stringify({ value: token, __version: '0' }), JSON.stringify({ value: token, __version: '0' }, null, 2)]) assert.equal(credentialsFromInput({ sessionToken }).sessionToken, token);
 });
 test('manual imports reject malformed Cookie headers and device injection without echoing credentials', () => {
   for (const input of [null, [], 1, 'invalid']) assert.throws(() => credentialsFromInput(input), { code: 'INVALID_SESSION' });
+  for (const sessionToken of ['{"value":null,"__version":"0"}', '{"value":{"token":"private"}}', '""', '"   "', '{bad-json']) assert.throws(() => credentialsFromInput({ sessionToken, cookie: 'session=valid' }), { code: 'INVALID_SESSION' });
   for (const cookie of ['session=private\r\nOther: header', 'session=private; session=other', 'Set-Cookie: session=private; HttpOnly', 'session=bad value', 'no-equals', 'x'.repeat(6001), ['session=private']]) {
     assert.throws(() => credentialsFromInput({ cookie }), error => { assert.equal(error.code, 'INVALID_COOKIE'); assert.doesNotMatch(error.message, /private/); return true; });
   }
@@ -409,6 +412,17 @@ test('manual candidate mismatch and cancellation remove the candidate without lo
   const id = await stagePendingAuthorization(env, owner, credentialsFromInput({ cookie: 'web_session=candidate' }));
   assert.deepEqual(await discardPendingAuthorization(env, owner, id, () => assert.fail('must not log out official browser')), { ok: true, revoked: null });
   assert.equal(await pendingAuthorizationState(env, owner), null);
+});
+test('Missing Token removes an incomplete Cookie candidate without treating the saved grant as expired', async () => {
+  const { env, user } = loginSetup(); const owner = { sub: 'owner', email: 'owner@example.com' }; env.DEEPSEEK_ACCOUNT_ID = user.id;
+  const existing = { dshToken: 'existing-private-grant' };
+  await importSession(env, existing, owner.email, Date.now(), async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: user } }));
+  const missing = async () => Response.json({ code: 40002, msg: 'Missing Token' });
+  await assert.rejects(connectManualSession(env, owner, { cookie: 'web_session=candidate' }, (credentials, pending) => importSession(env, credentials, owner.email, Date.now(), missing, pending), () => assert.fail('must not revoke the official browser')), { code: 'AUTH_TOKEN_MISSING', credentialMode: 'cookie' });
+  assert.equal(await pendingAuthorizationState(env, owner), null); assert.deepEqual(await credentialsFor(env), existing);
+  const id = await stagePendingAuthorization(env, owner, existing);
+  await assert.rejects(verifyPendingAuthorization(env, owner, id, () => { throw new ApiError(503, 'AUTH_TOKEN_MISSING', 'Missing Token'); }, () => assert.fail('a missing token is not a rejected grant')), { code: 'AUTH_TOKEN_MISSING' });
+  assert.equal((await pendingAuthorizationState(env, owner)).id, id); assert.deepEqual(await credentialsFor(env), existing);
 });
 
 test('login diagnostics expose only the current SSO subject and never browser connection capabilities', async () => {

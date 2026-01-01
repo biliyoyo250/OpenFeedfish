@@ -62,7 +62,8 @@ export async function verifyPendingAuthorization(env, identity, id, saveSession,
       error.issuedIdentity = typeof credentials.issuedAccount.id === 'string' && credentials.issuedAccount.id.length > 0;
       if (['CNY', 'USD'].includes(credentials.issuedAccount.currency)) error.issuedCurrency = credentials.issuedAccount.currency;
     }
-    if (['SESSION_EXPIRED', 'ACCOUNT_MISMATCH', 'VAULT_UNAVAILABLE', 'AUTH_EXPIRED'].includes(error.code)) {
+    const incompleteCookieImport = error.code === 'AUTH_TOKEN_MISSING' && !credentials?.sessionToken && !credentials?.dshToken;
+    if (incompleteCookieImport || ['SESSION_EXPIRED', 'ACCOUNT_MISMATCH', 'VAULT_UNAVAILABLE', 'AUTH_EXPIRED'].includes(error.code)) {
       const removed = await removeOwned(env, id, identity.sub, now + 30000);
       if (removed.meta.changes && credentials) await revokeGrant(credentials, fetcher);
     }

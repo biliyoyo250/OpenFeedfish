@@ -10,12 +10,13 @@ const closed = (env, id) => env.DB.prepare("UPDATE account_authorization SET sta
 const expired = () => new ApiError(409, 'AUTH_EXPIRED', '本次授权已结束，请重新运行本机连接助手。');
 const busy = () => new ApiError(409, 'AUTH_BUSY', '账户授权正在处理，请稍后重试。');
 const base64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_BUSY', 'AUTH_PENDING', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REDIRECT', 'UPSTREAM_REJECTED']);
+const diagnosticCodes = new Set(['AUTH_EXPIRED', 'AUTH_BUSY', 'AUTH_PENDING', 'AUTH_REJECTED', 'AUTH_NETWORK', 'AUTH_CHALLENGE', 'AUTH_NOT_JSON', 'AUTH_PROTOCOL', 'AUTH_SAVE_FAILED', 'AUTH_TOKEN_MISSING', 'ACCOUNT_INVALID', 'ACCOUNT_UNAVAILABLE', 'ACCOUNT_MISMATCH', 'SESSION_EXPIRED', 'VAULT_UNAVAILABLE', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_NOT_JSON', 'UPSTREAM_PROTOCOL', 'UPSTREAM_HTTP', 'UPSTREAM_REDIRECT', 'UPSTREAM_REJECTED']);
 export function authorizationDiagnostic(stage, error) {
   const value = { stage: ['initialize', 'exchange', 'account'].includes(stage) ? stage : 'account', code: diagnosticCodes.has(error?.code) ? error.code : 'AUTH_SAVE_FAILED' };
   for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error?.[key])) value[key] = error[key];
   if (['identity', 'currency', 'banned', 'payment'].includes(error?.accountCheck)) value.accountCheck = error.accountCheck;
   if (['captcha', 'challenge'].includes(error?.upstreamChallenge)) value.upstreamChallenge = error.upstreamChallenge;
+  if (['none', 'cookie', 'web-token', 'dsh'].includes(error?.credentialMode)) value.credentialMode = error.credentialMode;
   if (typeof error?.issuedIdentity === 'boolean') value.issuedIdentity = error.issuedIdentity;
   if (['CNY', 'USD'].includes(error?.issuedCurrency)) value.issuedCurrency = error.issuedCurrency;
   return value;

@@ -5,7 +5,16 @@ export function credentialsFromInput(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'INVALID_SESSION', '请提交登录 Cookie 或 Token。');
   const credentials = { deviceId: '', deviceModel: '', shumeiDeviceId: '' };
   if (body.sessionToken !== undefined && typeof body.sessionToken !== 'string') throw new ApiError(400, 'INVALID_SESSION', '登录 Token 格式无效。');
-  const token = (body.sessionToken || '').trim().replace(/^Bearer\s+/i, '');
+  let token = (body.sessionToken || '').trim();
+  if (token.startsWith('{') || token.startsWith('"')) {
+    try {
+      const stored = JSON.parse(token);
+      token = typeof stored === 'string' ? stored : stored && typeof stored.value === 'string' ? stored.value : null;
+    } catch { token = null; }
+    if (token === null) throw new ApiError(400, 'INVALID_SESSION', 'userToken 内容无效，请复制完整的 userToken 值或 Authorization。');
+  }
+  token = token.trim().replace(/^Authorization:\s*/i, '').replace(/^Bearer\s+/i, '');
+  if (body.sessionToken?.trim() && !token) throw new ApiError(400, 'INVALID_SESSION', 'userToken 为空，请确认官网已经登录。');
   if (token) {
     if (token.length < 20 || token.length > 6000 || /[^\x21-\x7e]/.test(token)) throw new ApiError(400, 'INVALID_SESSION', '请输入有效的网页登录 Token。');
     credentials.sessionToken = token;

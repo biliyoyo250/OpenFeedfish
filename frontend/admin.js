@@ -158,7 +158,7 @@ function renderSession(data) {
     ? `会话凭证已加密暂存，可点击“重试账户核验”，有效至 ${dateLabel(data.pendingAuthorization.expiresAt)}。`
     : data.authorization
     ? `请在 DeepSeek 页面核对账户并授权。有效至 ${dateLabel(data.authorization.expiresAt)}，完成后自动核验并保存。`
-    : '本地凭证由 Cloudflare 核验并加密保存。Cookie 或 Token 至少填写一项。';
+    : '网页登录 Token 由 Cloudflare 核验并加密保存，Cookie 为可选辅助字段。';
   element('access-error').hidden = true;
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
@@ -289,8 +289,8 @@ form.addEventListener('submit', (event) => {
     const value = element(id).value.trim();
     if (value) payload[key] = value;
   }
-  if (!payload.sessionToken && !payload.cookie) {
-    setNotice('请填写登录 Cookie 或 Token，至少一项。', true);
+  if (!payload.sessionToken) {
+    setNotice('请填写网页登录 Token（userToken）或 Authorization。', true);
     return;
   }
   if (new TextEncoder().encode(JSON.stringify(payload)).length > 8192) { setNotice('凭证内容过长，请只填写所需的 Cookie / Token。', true); return; }

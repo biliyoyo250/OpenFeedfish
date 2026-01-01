@@ -29,7 +29,8 @@ export async function upstream(path, credentials, body, fetcher = fetch) {
     }
     result = await response.json();
   } catch (error) { throw withUpstreamDiagnostic(error instanceof ApiError ? error : new ApiError(503, response ? 'UPSTREAM_PROTOCOL' : 'UPSTREAM_UNAVAILABLE', '收款平台暂不可用，请稍后重试。'), response); }
-  if (response.status === 401 || result?.code === 40002 || result?.code === 40003) throw withUpstreamDiagnostic(new ApiError(503, 'SESSION_EXPIRED', '收款账号登录已失效，请联系收款人。'), response, result);
+  if (response.status === 401 || result?.code === 40003) throw withUpstreamDiagnostic(new ApiError(503, 'SESSION_EXPIRED', '收款账号登录已失效，请联系收款人。'), response, result);
+  if (result?.code === 40002) throw withUpstreamDiagnostic(Object.assign(new ApiError(503, 'AUTH_TOKEN_MISSING', 'DeepSeek 未识别到账户 Token，请导入官网 userToken 或对应的 Authorization。'), { credentialMode: credentials.dshToken ? 'dsh' : credentials.sessionToken ? 'web-token' : cookie ? 'cookie' : 'none' }), response, result);
   if (!response.ok) throw withUpstreamDiagnostic(new ApiError(503, 'UPSTREAM_HTTP', '收款平台暂不可用，请稍后重试。'), response, result);
   if (result?.code !== 0 || result?.data?.biz_code !== 0) throw withUpstreamDiagnostic(new ApiError(502, 'UPSTREAM_REJECTED', '收款平台未接受请求，请管理员检查账号状态。'), response, result);
   return result.data.biz_data;

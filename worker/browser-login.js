@@ -32,7 +32,7 @@ async function pageFor(browser) {
 async function viewFor(page) {
   const cdp = await page.context().newCDPSession(page);
   try {
-    const { devtoolsFrontendUrl } = await cdp.send('Cloudflare.getLiveView', { mode: 'tab', expiresInMs: 60000 });
+    const { devtoolsFrontendUrl } = await cdp.send('Cloudflare.getLiveView', { mode: 'tab', expiresInMs: lifetime });
     return safeLiveUrl(devtoolsFrontendUrl);
   } finally { await cdp.detach(); }
 }
@@ -78,7 +78,7 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
   if (!claim.meta.changes) throw new ApiError(409, 'LOGIN_BUSY', '登录窗口正在处理，请稍后重试。');
   let browser;
   try {
-    const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 180000, recording: false });
+    const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: lifetime, recording: false });
     browser = await connect(env, sdk, sessionId);
     const context = browser.contexts()[0];
     if (!context) throw new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试。');
@@ -109,6 +109,21 @@ export function credentialsFromBrowser(headers, cookies) {
   }).map(({ name, value, domain, path, secure, expires }) => ({ name, value, domain, path, secure, expires }));
   if (!credentials.sessionToken && !credentials.dshToken && !credentials.cookies.length) throw new ApiError(409, 'LOGIN_PENDING', '尚未取得有效登录会话，请在官方窗口完成登录后再保存。');
   return credentials;
+}
+export async function browserLoginDiagnostics(env, identity, sdk) {
+  available(env);
+  const row = await rowFor(env);
+  if (!row || row.owner_sub !== identity.sub || !row.sealed_session) return { state: 'unavailable', active: false };
+  const saved = await unseal(row.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
+  sdk ||= await sdkFor();
+  const active = (await sdk.sessions(env.BROWSER)).some((session) => session.sessionId === saved.sessionId);
+  const result = { state: row.state, active, createdAt: new Date(row.created_at).toISOString(), expiresAt: new Date(row.expires_at).toISOString() };
+  if (!active) {
+    const previous = (await sdk.history(env.BROWSER)).find((session) => session.sessionId === saved.sessionId);
+    result.closeReason = previous?.closeReasonText || 'Unavailable';
+    result.closedAt = previous?.endTime ? new Date(previous.endTime).toISOString() : null;
+  }
+  return result;
 }
 export async function completeBrowserLogin(env, identity, id, saveSession, sdk, now = Date.now()) {
   available(env);

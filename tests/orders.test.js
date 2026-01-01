@@ -9,7 +9,7 @@ import { seal, unseal, credentialsFor, accountState } from '../worker/vault.js';
 import { createPayment, queryPayment, mapPaymentResult, upstream, verifyAccount } from '../worker/provider.js';
 import { applyPaymentResult, reconcileOrder, reconcileScheduled } from '../worker/reconcile.js';
 import { importSession } from '../worker/admin.js';
-import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser } from '../worker/browser-login.js';
+import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics } from '../worker/browser-login.js';
 import { cookieHeader } from '../worker/provider.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
 
@@ -101,6 +101,19 @@ test('browser authentication preserves cookie-only sessions and filters origin, 
     assert.equal(options.headers.Authorization, undefined); assert.equal(options.headers.Cookie, 'session=valid');
     return Response.json({ code: 0, data: { biz_code: 0, biz_data: {} } });
   });
+});
+
+test('login diagnostics expose only the current SSO subject and never browser connection capabilities', async () => {
+  const { env, sdk } = loginSetup(); const identity = { sub: 'owner' };
+  await startBrowserLogin(env, identity, sdk);
+  sdk.sessions = async () => [{ sessionId: 'private-browser-session', connectionId: 'secret-connection' }];
+  assert.equal((await browserLoginDiagnostics(env, identity, sdk)).active, true);
+  assert.deepEqual(await browserLoginDiagnostics(env, { sub: 'other' }, sdk), { state: 'unavailable', active: false });
+  sdk.sessions = async () => [];
+  sdk.history = async () => [{ sessionId: 'other', closeReasonText: 'must-not-leak' }, { sessionId: 'private-browser-session', closeReasonText: 'BrowserIdle', endTime: Date.now() }];
+  const result = await browserLoginDiagnostics(env, identity, sdk);
+  assert.equal(result.active, false); assert.equal(result.closeReason, 'BrowserIdle');
+  assert.doesNotMatch(JSON.stringify(result), /private-browser-session|secret-connection|must-not-leak/);
 });
 test('CNY money uses integer fen and rejects coercion/rounding/overflow', () => {
   assert.equal(parseAmount('1.01'), 101); assert.equal(parseAmount('100000.00'), 10000000); assert.equal(formatAmount(1001), '10.01');

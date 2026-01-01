@@ -272,7 +272,7 @@ loginStart.addEventListener('click', async () => {
     if (url.origin !== 'https://live.browser.run' || !url.pathname.startsWith('/ui/') || !data.id || !data.expiresAt) throw new Error('未取得有效的登录窗口。');
     session.browserLogin = { id: data.id, expiresAt: data.expiresAt };
     loginLink.href = url.href; loginLink.hidden = false;
-    element('login-state').textContent = '点击下方链接进入官方窗口。完成登录后，回到这里保存会话。进入链接在 1 分钟后失效，可重新打开。';
+    element('login-state').textContent = '点击下方链接进入官方窗口。完成登录后，回到这里保存会话。登录窗口最长保留 5 分钟。';
     setNotice('登录窗口已准备好。');
   } catch (error) { setNotice(error.message, true); }
   finally { busy = false; updateControls(); }

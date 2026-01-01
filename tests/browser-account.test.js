@@ -5,12 +5,14 @@ import { verifyAccountInBrowser } from '../worker/browser-login.js';
 import { browserPaymentFetcher } from '../worker/browser-payments.js';
 import { mapPaymentResult } from '../worker/provider.js';
 import { paymentDeviceId } from '../worker/payment-device.js';
+import { paymentVerification } from '../worker/payment-verification.js';
 
 function browserSetup(response = () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'fixed', currency: 'CNY', email: 'private@example.test', token: 'must-not-return' } } })) {
   const counts = { acquisitions: 0, connections: 0, evaluations: 0, requests: 0, terminations: 0, disconnects: 0 };
   const credentials = { dshToken: 'existing-private-grant', deviceId: 'existing-device', deviceModel: 'trusted-client' };
   const env = { BROWSER: {}, DEEPSEEK_ACCOUNT_ID: 'fixed' };
   const device = { value: 'generated-cloud-device' };
+  const verification = { calls: 0, valid: true, reject: false };
   let url = 'about:blank';
   const page = {
     url: () => url,
@@ -23,7 +25,7 @@ function browserSetup(response = () => Response.json({ code: 0, data: { biz_code
       counts.evaluations++;
       return runInNewContext(`(${fn.toString()})(headers)`, {
         headers, location: { origin: new URL(url).origin }, AbortSignal, setTimeout, clearTimeout,
-        window: { SMSdk: { ready: (callback) => callback(), getDeviceId: () => device.value } },
+        window: { SMSdk: { ready: (callback) => callback(), getDeviceId: () => device.value }, AwsWafIntegration: { getToken: async () => { verification.calls++; if (verification.reject) throw new Error('private SDK failure'); return 'private-vendor-token'; }, hasToken: () => verification.valid } },
         fetch: async (target, options) => {
           counts.requests++;
           assert.ok(['https://platform.deepseek.com/auth-api/v0/users/current', 'https://platform.deepseek.com/api/v1/payments', 'https://platform.deepseek.com/api/v1/payments/known-order/capture'].includes(target));
@@ -33,6 +35,7 @@ function browserSetup(response = () => Response.json({ code: 0, data: { biz_code
           assert.equal(options.headers['x-device-id'], credentials.deviceId);
           assert.equal(options.headers.Cookie, undefined);
           assert.equal(options.headers.Authorization, undefined);
+          assert.equal(options.headers['x-aws-waf-token'], undefined);
           return response(target, options);
         },
       });
@@ -49,7 +52,7 @@ function browserSetup(response = () => Response.json({ code: 0, data: { biz_code
     endpointURLString: () => 'http://fake.test/v1/devtools/browser/private-session',
     connect: async () => { counts.connections++; return browser; },
   };
-  return { env, credentials, sdk, page, browser, counts, device };
+  return { env, credentials, sdk, page, browser, counts, device, verification };
 }
 
 test('browser account checks authenticate only the fixed read-only endpoint and close the instance', async () => {
@@ -80,6 +83,7 @@ test('browser QR transport binds the live account, sends one fixed payment reque
   assert.equal(JSON.parse(text).data.biz_data.payment_order_id, 'test-order');
   assert.ok(!text.includes('must-not-return'));
   assert.equal(paymentCalls, 1); assert.equal(state.counts.acquisitions, 1); assert.equal(state.counts.terminations, 1);
+  assert.equal(state.verification.calls, 1);
 });
 
 test('browser QR failures distinguish an unattempted request from an uncertain creation without retrying', async () => {
@@ -109,6 +113,7 @@ test('a scoped browser capture polls one existing order without a body or a new 
   assert.ok(!text.includes('must-not-return'));
   assert.deepEqual(mapPaymentResult(result, { provider_order_id: 'known-order', amount_fen: 100 }), { status: 'pending', providerStatus: 'CREATED' });
   assert.equal(captures, 1); assert.equal(state.counts.acquisitions, 1); assert.equal(state.counts.terminations, 1);
+  assert.equal(state.verification.calls, 0);
 });
 
 test('capture scopes reject different orders, injected bodies and creation requests before browser acquisition', async () => {
@@ -140,6 +145,41 @@ test('payment context checks read the actual SDK device without creating a bill 
   assert.deepEqual(account, { id: 'fixed', currency: 'CNY' });
   assert.ok(!JSON.stringify(account).includes(state.device.value));
   assert.equal(state.counts.requests, 1); assert.equal(state.counts.terminations, 1);
+  assert.equal(state.verification.calls, 1);
+});
+
+test('official verification failure stops before payment and never retries or exposes the vendor token', async () => {
+  const state = browserSetup(); state.verification.reject = true;
+  const options = { method: 'POST', body: JSON.stringify({ order_info: { amount: '1', currency: 'CNY', payment_method_type: 'CMB_UNIONPAY', fallback_method_type: 'WECHAT', request_id: crypto.randomUUID() } }) };
+  await assert.rejects(browserPaymentFetcher(state.env, state.credentials, state.sdk)('https://platform.deepseek.com/api/v1/payments', options), error => error.code === 'PAYMENT_VERIFICATION_REQUIRED' && error.creationAttempted === false && !error.message.includes('private'));
+  assert.equal(state.counts.requests, 1); assert.equal(state.verification.calls, 1); assert.equal(state.counts.terminations, 1);
+});
+
+test('ordinary vendor SDK initialization uses the official fixed script and returns no token', async () => {
+  const runtime = { location: { origin: 'https://platform.deepseek.com' }, window: {}, setTimeout, clearTimeout };
+  let scriptLoads = 0;
+  runtime.document = {
+    querySelector: () => null,
+    createElement: () => { const handlers = {}; return { addEventListener: (type, fn) => { handlers[type] = fn; }, handlers }; },
+    head: { appendChild: (script) => {
+      assert.equal(script.src, 'https://a0fea896111e.edge.sdk.awswaf.com/a0fea896111e/3a8b889b892b/challenge.js');
+      scriptLoads++;
+      runtime.window.AwsWafIntegration = { getToken: async () => 'private-token-must-not-return', hasToken: () => true };
+      script.handlers.load();
+    } },
+  };
+  const page = { evaluate: (fn, argument) => runInNewContext(`(${fn.toString()})(argument)`, { ...runtime, argument }) };
+  assert.equal(await paymentVerification(page), undefined);
+  assert.equal(scriptLoads, 1);
+  runtime.location.origin = 'https://other.example';
+  await assert.rejects(paymentVerification(page), { code: 'PAYMENT_VERIFICATION_REQUIRED' });
+  assert.equal(scriptLoads, 1);
+});
+
+test('a vendor SDK without a valid verification result cannot trigger a payment request', async () => {
+  const state = browserSetup(); state.verification.valid = false;
+  await assert.rejects(verifyAccountInBrowser(state.env, state.credentials, state.sdk, true), { code: 'PAYMENT_VERIFICATION_REQUIRED' });
+  assert.equal(state.counts.requests, 1); assert.equal(state.verification.calls, 1); assert.equal(state.counts.terminations, 1);
 });
 
 test('a missing SDK identity stops creation before the payment POST and closes the browser', async () => {

@@ -1,6 +1,7 @@
 import { ApiError } from './lib.js';
 import { withVerifiedAccountBrowser } from './browser-login.js';
 import { paymentDeviceId } from './payment-device.js';
+import { paymentVerification } from './payment-verification.js';
 
 // Scoped admin transport: either a one-yuan QR test or polling one existing
 // order. A capture scope cannot create orders or query any other order.
@@ -19,6 +20,7 @@ export function browserPaymentFetcher(env, credentials, sdk, providerOrderId) {
       return await withVerifiedAccountBrowser(env, credentials, async (page, headers) => {
         if (new URL(page.url()).origin !== 'https://platform.deepseek.com') throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止付款码请求。');
         const deviceId = capturePath ? null : await paymentDeviceId(page);
+        if (!capturePath) await paymentVerification(page);
         attempted = true;
         const result = await page.evaluate(async ({ headers, body, capturePath }) => {
           if (location.origin !== 'https://platform.deepseek.com') return { wrongOrigin: true };

@@ -3,6 +3,7 @@ import { seal, unseal } from './vault.js';
 import { accountFromProfile } from './provider.js';
 import { platformClientHeaders } from './platform-client.js';
 import { paymentDeviceId } from './payment-device.js';
+import { paymentVerification } from './payment-verification.js';
 
 const origin = 'https://platform.deepseek.com';
 const lifetime = 5 * 60 * 1000;
@@ -240,7 +241,7 @@ export async function anonymousBrowserConnectivity(env) {
 // headers belong only to the fixed account fetch, never to page navigation or
 // third-party assets. No login, CAPTCHA solving, or payment happens here.
 export async function verifyAccountInBrowser(env, credentials, sdk, paymentContext = false) {
-  return withVerifiedAccountBrowser(env, credentials, paymentContext ? async (page, _headers, account) => { await paymentDeviceId(page); return account; } : undefined, sdk);
+  return withVerifiedAccountBrowser(env, credentials, paymentContext ? async (page, _headers, account) => { await paymentDeviceId(page); await paymentVerification(page); return account; } : undefined, sdk);
 }
 // Callers are server-side, fixed-operation adapters; this is never a remote
 // evaluation or arbitrary-URL API exposed to the management client.

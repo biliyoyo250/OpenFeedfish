@@ -1,9 +1,11 @@
 import { ApiError, parseAmount, formatAmount, validateOrder, isDemo, hash, accessToken, publicOrder, assertOrigin, readJson, verifyTurnstile } from './lib.js';
 import { providerReady, createPayment, queryPayment } from './provider.js';
+import { handleAdmin } from './admin.js';
+import { applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconcile.js';
 
 const localSecret = 'feedfish-local-demo-not-valid-in-production';
 const secretFor = (env, demo) => demo ? localSecret : env.ORDER_TOKEN_SECRET;
-const ready = (env, demo) => demo || (env.PAYMENTS_ENABLED === 'true' && env.ORDER_TOKEN_SECRET?.length >= 32 && !!env.TURNSTILE_SITE_KEY && !!env.TURNSTILE_SECRET_KEY && providerReady(env));
+const ready = async (env, demo) => demo || (env.PAYMENTS_ENABLED === 'true' && env.ORDER_TOKEN_SECRET?.length >= 32 && !!env.TURNSTILE_SITE_KEY && !!env.TURNSTILE_SECRET_KEY && await providerReady(env));
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function json(body, status = 200) {
   return Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...(status === 429 ? { 'Retry-After': '60' } : {}) } });
@@ -22,7 +24,7 @@ async function existingResponse(row, fingerprint, env, demo) {
 }
 async function createOrder(request, env, demo) {
   assertOrigin(request, demo);
-  if (!ready(env, demo)) throw new ApiError(503, 'PAYMENTS_UNAVAILABLE', '收款暂未开放，请晚一点再来。');
+  if (!await ready(env, demo)) throw new ApiError(503, 'PAYMENTS_UNAVAILABLE', '收款暂未开放，请晚一点再来。');
   await rateLimit(request, env, 'create', 6, demo);
   const key = request.headers.get('Idempotency-Key') || '';
   if (!uuid.test(key)) throw new ApiError(400, 'INVALID_IDEMPOTENCY_KEY', '请求标识无效，请刷新后重试。');
@@ -32,14 +34,15 @@ async function createOrder(request, env, demo) {
   if (existing) return existingResponse(existing, fingerprint, env, demo);
   if (!demo) await verifyTurnstile(request, env, body.turnstileToken);
   const now = Date.now(); const id = crypto.randomUUID(); const token = await accessToken(id, secretFor(env, demo));
-  const insert = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,is_demo,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, keyHash, fingerprint, await hash(token), input.amountFen, input.paymentMethod, input.nickname, input.message, 'creating', demo ? 1 : 0, now, now + 1800000).run();
+  const insert = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, keyHash, fingerprint, await hash(token), input.amountFen, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', demo ? 1 : 0, now, now + 900000).run();
   if (!insert.meta.changes) { existing = await env.DB.prepare('SELECT * FROM orders WHERE idempotency_hash=?').bind(keyHash).first(); return existingResponse(existing, fingerprint, env, demo); }
   try {
     const payment = demo ? { providerOrderId: `demo-${id}`, qrCode: `feedfish-demo:${id}`, expiresAt: now + 1800000 } : await createPayment(env, { ...input, requestId: id });
-    await env.DB.prepare('UPDATE orders SET status=?,provider_order_id=?,qr_code=?,expires_at=? WHERE id=? AND status=?').bind('pending', payment.providerOrderId, payment.qrCode, payment.expiresAt, id, 'creating').run();
+    await env.DB.prepare('UPDATE orders SET status=?,payment_state=?,provider_order_id=?,qr_code=?,payment_url=?,expires_at=? WHERE id=? AND status=?').bind('pending', 'waiting', payment.providerOrderId, payment.qrCode, payment.paymentUrl || null, payment.expiresAt, id, 'creating').run();
   } catch (error) {
     // A timed-out create may have reached the provider. Never retry it automatically.
-    await env.DB.prepare('UPDATE orders SET status=? WHERE id=? AND status=?').bind('unknown', id, 'creating').run();
+    const status = error.creationAttempted === false ? 'failed' : 'unknown';
+    await env.DB.prepare('UPDATE orders SET status=?,payment_state=? WHERE id=? AND status=?').bind(status, status, id, 'creating').run();
     throw error instanceof ApiError ? error : new ApiError(503, 'ORDER_UNCERTAIN', '订单暂未确认，请重试同一请求或联系收款人核对。');
   }
   const row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
@@ -56,14 +59,8 @@ async function getOrder(request, env, id, demo) {
   await rateLimit(request, env, 'query', 60, demo);
   let row = await loadOrder(request, env, id, demo);
   if (row.status === 'pending') {
-    const now = Date.now();
-    const lease = await env.DB.prepare('UPDATE orders SET last_checked_at=? WHERE id=? AND status=? AND last_checked_at<? RETURNING id').bind(now, id, 'pending', now - 3000).first();
-    if (lease) {
-      const result = demo ? { status: row.expires_at <= now ? 'expired' : 'pending' } : await queryPayment(env, row);
-      if (!['pending', 'paid', 'failed', 'expired'].includes(result.status)) throw new ApiError(502, 'INVALID_PAYMENT_STATUS', '暂时无法确认付款结果。');
-      if (result.status !== 'pending') await env.DB.prepare('UPDATE orders SET status=?,paid_at=? WHERE id=? AND status=?').bind(result.status, result.status === 'paid' ? now : null, id, 'pending').run();
-      row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
-    }
+    await reconcileOrder(env, row);
+    row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
   }
   return json(publicOrder(row));
 }
@@ -71,8 +68,9 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url); const demo = isDemo(request, env);
     try {
+      if (url.pathname === '/admin' || url.pathname.startsWith('/admin/') || url.pathname.startsWith('/api/admin/')) return await handleAdmin(request, env);
       if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
-      if (url.pathname === '/api/config' && request.method === 'GET') return json({ currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', turnstileSiteKey: demo ? '' : env.TURNSTILE_SITE_KEY || '', demo, paymentsAvailable: ready(env, demo) });
+      if (url.pathname === '/api/config' && request.method === 'GET') return json({ currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileSiteKey: demo ? '' : env.TURNSTILE_SITE_KEY || '', demo, paymentsAvailable: await ready(env, demo) });
       if (!env.DB) throw new ApiError(503, 'DATABASE_UNAVAILABLE', '服务暂未就绪，请稍后再试。');
       if (Math.random() < 0.02 && ctx?.waitUntil) ctx.waitUntil(env.DB.prepare('DELETE FROM rate_limits WHERE expires_at<?').bind(Date.now()).run().catch(() => {}));
       if (url.pathname === '/api/orders' && request.method === 'POST') return await createOrder(request, env, demo);
@@ -82,7 +80,7 @@ export default {
         if (match[2] && request.method === 'POST' && demo) {
           assertOrigin(request, demo); const row = await loadOrder(request, env, match[1], demo);
           if (row.status !== 'pending' || row.expires_at <= Date.now()) throw new ApiError(409, 'ORDER_CLOSED', '该演示订单已关闭。');
-          await env.DB.prepare('UPDATE orders SET status=?,paid_at=? WHERE id=? AND status=? AND is_demo=1').bind('paid', Date.now(), row.id, 'pending').run();
+          await applyPaymentResult(env, row, { status: 'paid', providerStatus: 'SUCCESS' }, 'demo');
           return json({ ok: true });
         }
       }
@@ -91,5 +89,6 @@ export default {
       // Never log request bodies, private messages, tokens, or raw upstream responses.
       return json({ error: { code: error instanceof ApiError ? error.code : 'INTERNAL_ERROR', message: error instanceof ApiError ? error.message : '服务暂不可用，请稍后再试。' } }, error instanceof ApiError ? error.status : 500);
     }
-  }
+  },
+  async scheduled(_controller, env, ctx) { ctx.waitUntil(reconcileScheduled(env)); }
 };

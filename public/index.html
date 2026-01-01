@@ -29,7 +29,7 @@
         <label class="field-label" for="amount">投喂金额</label>
         <div class="amount-wrap"><span class="yen" aria-hidden="true">¥</span><input id="amount" name="amount" type="text" inputmode="decimal" autocomplete="off" value="10.00" aria-describedby="amount-help" required><span>CNY</span></div>
         <div class="presets" aria-label="选择充值金额"><button type="button" data-amount="10.00" aria-pressed="true">¥10</button><button type="button" data-amount="20.00" aria-pressed="false">¥20</button><button type="button" data-amount="50.00" aria-pressed="false">¥50</button><button type="button" data-amount="100.00" aria-pressed="false">¥100</button></div>
-        <p class="hint" id="amount-help">多少都是心意，也可以输入其他金额。</p>
+        <p class="hint" id="amount-help">多少都是心意。支持 1–100000 CNY，仅限整数元。</p>
         <div class="form-row"><label class="field-label" for="nickname">你的昵称 <span>选填</span></label><input id="nickname" name="nickname" maxlength="40" autocomplete="nickname" placeholder="怎么称呼你？"></div>
         <div class="form-row"><label class="field-label" for="message">想说的话 <span>选填</span></label><textarea id="message" name="message" maxlength="300" rows="2" placeholder="给小鱼留句话吧…"></textarea><div class="message-meta"><span><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="7" width="8" height="6" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>昵称与留言仅收款人可见</span><span id="message-count">0 / 300</span></div></div>
         <fieldset><legend class="field-label">选择支付方式</legend><div class="payment-options"><label class="payment-pill"><input type="radio" name="paymentMethod" value="wechat" checked><span class="pay-icon wechat" aria-hidden="true">●</span><span>微信支付</span><span class="radio-mark"></span></label><label class="payment-pill"><input type="radio" name="paymentMethod" value="alipay"><span class="pay-icon alipay" aria-hidden="true">支</span><span>支付宝</span><span class="radio-mark"></span></label></div></fieldset>
@@ -43,6 +43,7 @@
         <div class="qr-frame" id="qr-frame"><canvas id="qr-canvas" aria-label="付款二维码" role="img"></canvas><div id="qr-overlay" hidden><span id="result-icon">✓</span></div></div>
         <p class="payment-instruction" id="payment-instruction"></p><p class="timer" id="countdown"></p>
         <p id="poll-error" class="error" role="status" hidden></p>
+        <a id="payment-link" class="secondary-button" target="_blank" rel="noopener noreferrer" hidden>打开支付宝付款页</a>
         <button id="check-payment" type="button" class="secondary-button">我已付款，查看结果</button>
         <button id="demo-pay" type="button" class="secondary-button" hidden>模拟支付成功</button>
         <button id="start-again" type="button" class="text-button">返回修改</button><p class="payment-footnote">付款状态由订单查询确认，请保留此页面。</p>

@@ -12,6 +12,7 @@ export const formatAmount = (fen) => `${Math.floor(fen / 100)}.${String(fen % 10
 export function validateOrder(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'INVALID_BODY', '提交内容格式不正确。');
   const amountFen = parseAmount(body.amount);
+  if (amountFen % 100 !== 0) throw new ApiError(400, 'INVALID_AMOUNT', 'DeepSeek 当前充值仅支持整数元。');
   if (!['wechat', 'alipay'].includes(body.paymentMethod)) throw new ApiError(400, 'INVALID_METHOD', '请选择微信或支付宝。');
   for (const [field, max] of [['nickname', 40], ['message', 300]]) {
     if (body[field] !== undefined && (typeof body[field] !== 'string' || body[field].length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(body[field]))) throw new ApiError(400, 'INVALID_TEXT', '昵称或留言不符合长度要求。');
@@ -27,7 +28,8 @@ export async function accessToken(id, secret) {
   return hex(await crypto.subtle.sign('HMAC', key, encode.encode(`feedfish-order:${id}`)));
 }
 export function publicOrder(row) {
-  return { id: row.id, amount: formatAmount(row.amount_fen), currency: 'CNY', paymentMethod: row.payment_method, status: row.status, qrCode: row.status === 'pending' ? row.qr_code : null, expiresAt: new Date(row.expires_at).toISOString() };
+  const canScan = row.status === 'pending' && row.expires_at > Date.now();
+  return { id: row.id, amount: formatAmount(row.amount_fen), currency: 'CNY', paymentMethod: row.payment_method, status: row.status, paymentState: row.payment_state, qrCode: canScan ? row.qr_code : null, paymentUrl: canScan ? row.payment_url || null : null, expiresAt: new Date(row.expires_at).toISOString() };
 }
 export function assertOrigin(request, demo) {
   const origin = request.headers.get('Origin');

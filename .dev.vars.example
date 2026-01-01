@@ -3,3 +3,8 @@ ORDER_TOKEN_SECRET=replace-with-at-least-32-random-characters
 TURNSTILE_SECRET_KEY=
 # Add the verified DeepSeek session credential following docs/DEPLOY.md.
 DEEPSEEK_SESSION_TOKEN=
+ACCOUNT_ENCRYPTION_KEY=
+# Optional device values from the same authenticated browser session:
+DEEPSEEK_DEVICE_ID=
+DEEPSEEK_DEVICE_MODEL=
+DEEPSEEK_SHUMEI_DEVICE_ID=

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="same-origin">
+  <meta name="theme-color" content="#f7f9f6">
+  <title>收款管理 · Feedfish</title>
+  <link rel="icon" href="/fish.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/admin.css">
+  <script type="module" src="/admin.js"></script>
+</head>
+<body>
+  <header class="admin-header">
+    <a class="brand" href="/" aria-label="Feedfish 首页"><img src="/fish.svg" width="32" height="32" alt=""><span>feedfish<span class="brand-dot">.</span></span></a>
+    <a class="back-link" href="/">查看赞助页面 <span aria-hidden="true">↗</span></a>
+  </header>
+  <main class="admin-layout">
+    <div class="page-heading"><div><p class="eyebrow">A LITTLE CARE, BEHIND THE SCENES</p><h1>收款管理</h1><p class="page-description">照看小鱼的账户，也收好每一份心意。</p></div><span id="access-state" class="access-badge">正在确认身份</span></div>
+    <p id="access-error" class="banner error-banner" role="alert" hidden></p>
+    <p id="demo-notice" class="banner demo-banner" hidden>本地后台演示 · 仅展示示例状态与记录，不保存真实凭证。</p>
+    <p id="action-notice" class="banner" role="status" aria-live="polite" hidden></p>
+
+    <section class="panel" aria-labelledby="account-title">
+      <div class="panel-heading"><div><p class="section-kicker">DEEPSEEK ACCOUNT</p><h2 id="account-title">固定收款账户</h2></div><button id="refresh-button" class="button subtle" type="button" disabled>刷新状态</button></div>
+      <dl class="account-facts">
+        <div><dt>连接状态</dt><dd><span id="account-status" class="status-badge neutral">正在加载</span></dd></div>
+        <div class="account-id-fact"><dt>固定账户 ID</dt><dd id="expected-account-id" class="mono">—</dd></div>
+        <div><dt>最近验证</dt><dd id="last-checked">—</dd></div>
+      </dl>
+      <p id="account-description" class="muted">正在确认管理权限与账户配置。</p>
+      <p id="account-id-warning" class="inline-warning" hidden>尚未指定固定收款账户。请由管理员配置环境变量 <code>DEEPSEEK_ACCOUNT_ID</code>，再导入会话。</p>
+      <div class="panel-bottom"><p class="small muted">会话更新时间：<span id="updated-at">—</span></p><div class="action-group"><button id="check-button" class="button" type="button" disabled>验证连接</button><button id="disable-button" class="button danger" type="button" disabled>停止新订单</button></div></div>
+    </section>
+
+    <section class="panel session-panel" aria-labelledby="session-title">
+      <div class="panel-heading"><div><p class="section-kicker">SESSION MAINTENANCE</p><h2 id="session-title">更新登录会话</h2></div><a class="official-link" href="https://platform.deepseek.com/sign_in" target="_blank" rel="noopener noreferrer">打开 DeepSeek 官方登录 <span aria-hidden="true">↗</span></a></div>
+      <p class="section-description">DeepSeek 密码与验证码在官方页面完成，此后台不接管其 MFA 或风控验证。完成登录后，在可信设备上维护会话；请勿分享会话凭证。</p>
+      <form id="session-form" autocomplete="off">
+        <fieldset id="session-fields" disabled>
+          <legend class="visually-hidden">导入 DeepSeek 登录会话</legend>
+          <label for="session-token">登录会话 Token <span class="required-label">必填</span></label>
+          <input id="session-token" name="sessionToken" type="password" required maxlength="6000" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="token-help" placeholder="粘贴当前登录会话凭证">
+          <p id="token-help" class="field-help">仅提交给本站后端验证与保存。提交后立即清空，不在此页面回显或保存在浏览器存储中。</p>
+          <details class="device-details"><summary>设备信息 <span>选填；需要与已有会话对应时填写</span></summary><div class="device-fields">
+            <div><label for="device-id">设备 ID <span class="optional-label">x-device-id</span></label><input id="device-id" name="deviceId" type="text" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
+            <div><label for="device-model">设备名称 <span class="optional-label">x-device-model</span></label><input id="device-model" name="deviceModel" type="text" maxlength="512" autocomplete="off" spellcheck="false"></div>
+            <div class="wide"><label for="shumei-device-id">数美设备 ID <span class="optional-label">shumei_device_id</span></label><input id="shumei-device-id" name="shumeiDeviceId" type="password" maxlength="512" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
+          </div></details>
+          <div class="form-bottom"><p class="small muted">后端核验账户 ID 后才会启用。</p><button id="import-button" class="button primary" type="submit" disabled>验证并保存会话 <span aria-hidden="true">→</span></button></div>
+        </fieldset>
+      </form>
+    </section>
+
+    <section class="panel orders-panel" aria-labelledby="orders-title">
+      <div class="panel-heading"><div><p class="section-kicker">LITTLE NOTES OF SUPPORT</p><h2 id="orders-title">最近的心意</h2></div><span class="table-note">最近 50 条 · CNY</span></div>
+      <p class="records-help">等待付款不代表尚未扫码。二维码过期后，后端仍会核对最终结果。付款时间仅显示平台返回值，到账确认时间是本站首次确认的时间。</p>
+      <p id="orders-loading" class="empty-state" role="status">正在加载赞助记录…</p>
+      <p id="orders-error" class="inline-warning" role="status" hidden></p>
+      <p id="orders-empty" class="empty-state" hidden>还没有赞助记录，第一份心意正在路上。</p>
+      <div id="orders-container" class="table-scroll" hidden><table><caption class="visually-hidden">最近 50 条赞助记录，付款时间与到账确认时间分别展示</caption><thead><tr><th scope="col">发起 / 付款时间</th><th scope="col">昵称 / 账单详情</th><th scope="col">金额 / 方式</th><th scope="col">支付状态</th></tr></thead><tbody id="orders-body"></tbody></table></div>
+    </section>
+  </main>
+  <footer><span>feedfish · 每一份支持，都好好收下。</span><span id="admin-identity">Cloudflare Access · 管理入口</span></footer>
+  <noscript><p class="noscript">请启用 JavaScript 以确认身份并管理收款账户。</p></noscript>
+</body>
+</html>

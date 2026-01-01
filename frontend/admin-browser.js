@@ -60,6 +60,7 @@ export function initBrowserAgent() {
     if (button.disabled || paymentBusy) return;
     const method = button.dataset.agentTestMethod;
     if (!testIds.has(method)) testIds.set(method, crypto.randomUUID());
+    const oldNotice = el('action-notice'); oldNotice.hidden = true; oldNotice.textContent = '';
     el('agent-test-qr').hidden = true; el('agent-test-result').textContent = ''; testOrder = null; el('agent-test-check').hidden = true;
     paymentBusy = true; updatePaymentControls(); notice('正在通过已登录浏览器生成 1 CNY 测试账单，只请求一次，请等待…');
     try {
@@ -67,7 +68,8 @@ export function initBrowserAgent() {
       await showTestOrder(order); notice(order.qrCode ? '已生成 1 CNY 测试码。当前仅验证取码，可点击“核对测试账单”查询官方状态。' : '已读取原测试账单，当前没有待付款二维码。');
     } catch (error) {
       const status = error.diagnostic?.upstreamStatus;
-      notice(`${error.message}${Number.isInteger(status) ? `（HTTP ${status}）` : ''} 若结果不确定，请核对原账单，避免新建另一笔。`);
+      const challenge = ['captcha', 'challenge'].includes(error.diagnostic?.upstreamChallenge) ? ' 官网要求浏览器验证。' : '';
+      notice(`自托管取码未完成。${error.message}${Number.isInteger(status) ? `（HTTP ${status}）` : ''}${challenge} 若结果不确定，请核对原账单，避免新建另一笔。`);
     } finally { paymentBusy = false; updatePaymentControls(); }
   });
   el('agent-test-check').addEventListener('click', async () => {

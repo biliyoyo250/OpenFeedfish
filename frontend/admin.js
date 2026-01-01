@@ -69,6 +69,8 @@ function dateLabel(value) {
 
 function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
+  const legacyPayments = session?.legacyPaymentTestingAvailable === true;
+  element('legacy-payment-tests').hidden = !legacyPayments;
   fields.disabled = !writable || Boolean(session?.pendingAuthorization);
   importButton.disabled = fields.disabled;
   const authorizationReady = writable && session.authorizationAvailable;
@@ -83,18 +85,18 @@ function updateControls() {
   refreshButton.disabled = !writable;
   checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
   checkButton.textContent = pending ? '重试账户核验' : '验证连接';
-  browserCheckButton.disabled = !writable || Boolean(pending) || !session?.account?.configured;
-  providerCheckButton.disabled = !writable || Boolean(pending) || !(session?.account?.configured || session?.account?.status === 'disabled');
+  browserCheckButton.disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured;
+  providerCheckButton.disabled = !legacyPayments || !writable || Boolean(pending) || !(session?.account?.configured || session?.account?.status === 'disabled');
   element('provider-check-id').disabled = providerCheckButton.disabled;
-  challengeStart.disabled = !writable || Boolean(pending) || !session?.account?.configured;
+  challengeStart.disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured;
   const challengeLive = Boolean(challengeSession && Date.parse(challengeSession.expiresAt) > Date.now());
   challengeComplete.hidden = !challengeSession; challengeCancel.hidden = !challengeSession;
   challengeComplete.disabled = challengeStart.disabled || !challengeLive;
   challengeCancel.disabled = !writable;
   element('challenge-view').hidden = !challengeLive;
-  element('browser-payment-mode').disabled = !writable || Boolean(pending) || !session?.account?.configured;
+  element('browser-payment-mode').disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured;
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
-  for (const button of testButtons) button.disabled = !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
+  for (const button of testButtons) button.disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
   if (challengeLive) {
     browserCheckButton.disabled = true; providerCheckButton.disabled = true; element('provider-check-id').disabled = true;
     for (const button of testButtons) button.disabled = true;

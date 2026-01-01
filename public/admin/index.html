@@ -25,7 +25,7 @@
     <p id="demo-notice" class="banner demo-banner" hidden>本地后台演示 · 仅展示示例状态与记录，不保存真实凭证。</p>
     <p id="action-notice" class="banner" role="status" aria-live="polite" hidden></p>
 
-    <section class="panel" aria-labelledby="account-title">
+    <details class="panel session-panel" aria-labelledby="account-title"><summary>旧 Cloudflare 会话（备用）</summary>
       <div class="panel-heading"><h2 id="account-title">固定收款账户</h2><button id="refresh-button" class="button subtle" type="button" disabled>刷新状态</button></div>
       <dl class="account-facts">
         <div><dt>连接状态</dt><dd><span id="account-status" class="status-badge neutral">正在加载</span></dd></div>
@@ -35,12 +35,12 @@
       <p id="account-description" class="muted">正在确认管理权限与账户配置。</p>
       <p id="account-id-warning" class="inline-warning" hidden>首次导入会话后会识别并锁定账户。将其 ID 配置为 <code>DEEPSEEK_ACCOUNT_ID</code> 后才可开放收款。</p>
       <div class="panel-bottom"><p class="small muted">会话更新时间：<span id="updated-at">—</span></p><div class="action-group"><button id="check-button" class="button" type="button" disabled>验证连接</button><button id="disable-button" class="button danger" type="button" disabled>停止新订单</button></div></div>
-      <details class="manual-session"><summary>验证支付通道</summary>
+      <details id="legacy-payment-tests" class="manual-session" hidden><summary>旧 Cloudflare 通道诊断</summary>
         <p class="field-help">通过 Cloudflare 浏览器核验已保存的账户和支付环境，不发起付款。</p>
         <button id="browser-check-button" class="button" type="button" disabled>云浏览器核验账户</button>
         <p class="field-help">创建 1 CNY 测试账单，记录到最近账单中。</p>
         <label class="field-help browser-mode"><input id="browser-payment-mode" type="checkbox"> 使用 Cloudflare 浏览器取码</label>
-        <div class="action-group"><button class="button" type="button" data-test-method="wechat" disabled>微信测试码</button><button class="button" type="button" data-test-method="alipay" disabled>支付宝测试码</button></div>
+        <div class="action-group"><button class="button" type="button" data-test-method="wechat" disabled>旧通道微信测试</button><button class="button" type="button" data-test-method="alipay" disabled>旧通道支付宝测试</button></div>
         <details id="payment-challenge-panel" class="device-details"><summary>官方验证码</summary>
           <p class="field-help">在 Cloudflare 临时窗口内手动完成验证码，再返回这里继续。无需重新登录 DeepSeek。窗口有效期 5 分钟，生成测试码后自动关闭。</p>
           <div class="action-group"><button id="challenge-start" class="button" type="button" disabled>准备官方验证码</button><a id="challenge-view" class="official-link" target="_blank" rel="noopener noreferrer" hidden>打开验证窗口 ↗</a><button id="challenge-cancel" class="button subtle" type="button" hidden>关闭窗口</button></div>
@@ -50,7 +50,7 @@
         <div id="payment-test-result" hidden><p id="payment-test-description" class="field-help"></p><img id="payment-test-qr" class="payment-test-qr" alt="1 CNY 测试账单付款码"><a id="payment-test-link" class="official-link" target="_blank" rel="noopener noreferrer" hidden>打开支付页 ↗</a></div>
         <details class="device-details"><summary>核对官网 1 CNY 测试订单</summary><p class="field-help">通过 Cloudflare 浏览器查询已有订单，不创建账单。</p><label for="provider-check-id">DeepSeek 订单号</label><input id="provider-check-id" type="text" maxlength="200" autocomplete="off" spellcheck="false"><button id="provider-check-button" class="button" type="button" disabled>查询官网订单状态</button></details>
       </details>
-    </section>
+    </details>
 
     <section class="panel session-panel" aria-labelledby="agent-title">
       <div class="panel-heading"><h2 id="agent-title">自托管浏览器</h2><span id="agent-status" class="status-badge neutral">正在检查</span></div>
@@ -59,7 +59,7 @@
       <div class="action-group agent-actions"><button id="agent-open" class="button primary" type="button" disabled>打开实时窗口</button></div>
       <details class="device-details"><summary>设备管理</summary><p class="field-help">关闭画面使用窗口内的“关闭实时窗口”。解除配对会停止服务连接，下次需重新配对。</p><button id="agent-revoke" class="button danger" type="button" disabled>解除设备配对</button></details>
       <p id="agent-notice" class="field-help" role="status" aria-live="polite">首次运行先执行 <code>npm run browser:install</code> 安装 Chromium。</p>
-      <details class="device-details"><summary>验证自托管支付通道</summary><p class="field-help">通过同一浏览器各生成 1 CNY 未付款测试码，账单会记录到后台；结果不确定时不会自动重建。</p><div class="action-group agent-actions"><button class="button" type="button" data-agent-test-method="wechat" disabled>微信测试码 · 1 CNY</button><button class="button" type="button" data-agent-test-method="alipay" disabled>支付宝测试码 · 1 CNY</button></div><p id="agent-test-result" class="field-help" role="status"></p><img id="agent-test-qr" class="payment-test-qr" alt="自托管浏览器生成的 1 CNY 测试账单付款码" hidden><button id="agent-test-check" class="button" type="button" disabled hidden>核对测试账单</button></details>
+      <details id="agent-payment-panel" class="device-details" open><summary>验证自托管支付通道</summary><p class="field-help">使用当前已登录的自托管浏览器生成 1 CNY 未付款测试码。账单会记录到后台；结果不确定时不会自动重建。</p><div class="action-group agent-actions"><button class="button" type="button" data-agent-test-method="wechat" disabled>微信测试码 · 1 CNY</button><button class="button" type="button" data-agent-test-method="alipay" disabled>支付宝测试码 · 1 CNY</button></div><p id="agent-test-result" class="field-help" role="status"></p><img id="agent-test-qr" class="payment-test-qr" alt="自托管浏览器生成的 1 CNY 测试账单付款码" hidden><button id="agent-test-check" class="button" type="button" disabled hidden>核对测试账单</button></details>
       <div id="agent-view" hidden>
         <div class="agent-toolbar"><button class="button subtle" type="button" data-agent-command="navigate" data-agent-page="top_up" disabled>充值页</button><button class="button subtle" type="button" data-agent-command="navigate" data-agent-page="sign_in" disabled>登录页</button><button class="button subtle" type="button" data-agent-command="reload" disabled>重新加载</button><button class="button" type="button" data-agent-command="check-account" disabled>核验固定账户</button><button id="agent-close" class="button subtle" type="button">关闭实时窗口</button></div>
         <canvas id="agent-screen" class="agent-screen" width="1024" height="768" tabindex="0" aria-label="远程 DeepSeek 浏览器画面，可点击、拖动和键盘输入"></canvas>
@@ -68,7 +68,7 @@
       </div>
     </section>
 
-    <section class="panel session-panel" aria-labelledby="session-title">
+    <details class="panel session-panel" aria-labelledby="session-title"><summary>备用账户连接（Cloudflare）</summary>
       <div class="panel-heading"><h2 id="session-title">连接 DeepSeek 账户</h2><a class="official-link" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">DeepSeek 官网 <span aria-hidden="true">↗</span></a></div>
       <p class="section-description">在本机运行 <code>npm run connect-account</code>，打开显示的本机地址，点击“连接 DeepSeek”。官方授权完成后自动返回，凭证由 Cloudflare 加密保存。</p>
       <div class="login-actions"><button id="login-start" class="button primary" type="button" disabled>等待本机连接</button><button id="login-cancel" class="button subtle" type="button" hidden>清除暂存凭证</button></div>
@@ -92,7 +92,7 @@
       </form>
       <details class="manual-session"><summary>从哪里复制？</summary><p class="field-help">在已登录的 DeepSeek 充值页按 F12，打开 Application → Local Storage → https://platform.deepseek.com，复制 userToken 的完整值（可直接复制 JSON）。也可从 Network 中 users/current 请求的 Request Headers 复制 Authorization。只粘贴在本页，不要发到聊天；无需反复复制刷新后变化的 Cookie。</p></details>
       </details>
-    </section>
+    </details>
 
     <section class="panel orders-panel" aria-labelledby="orders-title">
       <div class="panel-heading"><h2 id="orders-title">最近账单</h2><span class="table-note">最近 50 条 · CNY</span></div>

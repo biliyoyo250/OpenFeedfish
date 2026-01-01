@@ -5,7 +5,7 @@ import { inspectAccount, verifyAccount, accountFromProfile, queryPayment } from 
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus, verifyAccountInBrowser } from './browser-login.js';
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
-import { createAdminTestPayment } from './admin-payments.js';
+import { createAdminTestPayment, assertAdminPaymentTransport } from './admin-payments.js';
 import { browserPaymentFetcher } from './browser-payments.js';
 import { startPaymentChallenge, paymentChallengeView, completePaymentChallenge, cancelPaymentChallenge } from './payment-challenge.js';
 import { connectManualSession } from './manual-session.js';
@@ -15,9 +15,10 @@ import { reconcileOrder } from './reconcile.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://feedfish.example; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
-async function paymentFailure(env, identity, event, error) {
+async function paymentFailure(env, identity, event, error, transport) {
   if (!(error instanceof ApiError)) throw error;
   const diagnostic = { stage: ['limits', 'acquire', 'connect', 'context', 'navigate', 'prepare', 'view', 'persist'].includes(error.browserStage) ? `browser_${error.browserStage}` : 'payment', code: error.code };
+  if (['agent', 'browser', 'worker'].includes(transport)) diagnostic.transport = transport;
   if (Number.isInteger(error.cloudflareStatus) && error.cloudflareStatus >= 100 && error.cloudflareStatus <= 599) diagnostic.cloudflareStatus = error.cloudflareStatus;
   for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error[key])) diagnostic[key] = error[key];
   if (['captcha', 'challenge'].includes(error.upstreamChallenge)) diagnostic.upstreamChallenge = error.upstreamChallenge;
@@ -39,7 +40,7 @@ export async function handleAdmin(request, env) {
     const response = await env.ASSETS.fetch(new Request(url, { method: 'GET' }));
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   }
-  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true }) : agentRequest(env, '/status');
   if (path === '/api/admin/browser-agent/socket' && request.method === 'GET' && !identity.demo) { assertOrigin(request, false); return agentViewer(request, env, identity); }
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
@@ -51,7 +52,7 @@ export async function handleAdmin(request, env) {
   if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) {
     const mode = new URL(request.url).searchParams.get('mode');
     if (mode === 'resources') return json(await browserResourceStatus(env));
-    if (mode === 'browser') return json(await anonymousBrowserConnectivity(env));
+    if (mode === 'browser') { assertAdminPaymentTransport(env, path, { transport: 'browser' }); return json(await anonymousBrowserConnectivity(env)); }
     return json(await authorizationConnectivity(fetch, mode === 'dsh' || mode === 'client' ? mode : 'anonymous'));
   }
   if (path === '/api/admin/orders' && request.method === 'GET') {
@@ -67,6 +68,7 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  assertAdminPaymentTransport(env, path, body);
   if (path === '/api/admin/account/agent-payment/check') {
     if (typeof body.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.id)) throw new ApiError(400, 'INVALID_ORDER_ID', '测试账单标识无效。');
     let row = await env.DB.prepare("SELECT * FROM orders WHERE id=? AND is_demo=0 AND provider_transport='agent'").bind(body.id).first();
@@ -107,7 +109,7 @@ export async function handleAdmin(request, env) {
       return json(await createAdminTestPayment(body.transport === 'agent' ? { ...env, PAYMENT_TRANSPORT: 'agent' } : env, identity, body, fetcher));
     }
     catch (error) {
-      return paymentFailure(env, identity, checking ? 'payment_check_failed' : 'payment_test_failed', error);
+      return paymentFailure(env, identity, checking ? 'payment_check_failed' : 'payment_test_failed', error, body.transport || 'worker');
     }
   }
   if (path === '/api/admin/account/authorize/start') {

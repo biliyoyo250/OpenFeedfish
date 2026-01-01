@@ -5,10 +5,24 @@ import { executePaymentJob } from '../scripts/agent-payments.mjs';
 import { agentPaymentFetcher } from '../worker/agent-payments.js';
 import { BrowserAgentRelay } from '../worker/browser-agent-relay.js';
 import { createPayment, queryPayment, mapPaymentResult } from '../worker/provider.js';
+import { assertAdminPaymentTransport } from '../worker/admin-payments.js';
 const base = (operation = 'create') => ({ type: 'payment-job', id: crypto.randomUUID(), accountId: 'fixed', operation, requestId: crypto.randomUUID(), paymentMethod: 'wechat', amountFen: 100 });
 const envelope = (data) => ({ ok: true, creationAttempted: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: data } } });
 const account = async () => ({ ok: true, accountId: 'fixed', currency: 'CNY', eligible: true });
 const rpcEnv = (respond) => ({ DEEPSEEK_ACCOUNT_ID: 'fixed', PAYMENT_TRANSPORT: 'agent', AGENT_RELAY: { idFromName: (value) => value, get: () => ({ fetch: async (request) => Response.json(await respond(await request.json())) }) } });
+
+test('cached legacy admin clients cannot create more Cloudflare tests or acquire a challenge browser', () => {
+  for (const [path, body] of [
+    ['/api/admin/account/test-payment', {}], ['/api/admin/account/test-payment', { transport: 'browser' }],
+    ['/api/admin/account/check-payment', {}], ['/api/admin/account/payment-challenge/start', {}],
+    ['/api/admin/account/payment-challenge/complete', {}], ['/api/admin/account/check', { transport: 'browser' }],
+    ['/api/admin/account/authorize/connectivity', { transport: 'browser' }],
+  ]) assert.throws(() => assertAdminPaymentTransport({}, path, body), { code: 'LEGACY_TRANSPORT_RETIRED', status: 409 });
+  for (const path of ['/api/admin/account/test-payment', '/api/admin/account/check-payment']) assert.doesNotThrow(() => assertAdminPaymentTransport({}, path, { transport: 'agent' }));
+  assert.doesNotThrow(() => assertAdminPaymentTransport({}, '/api/admin/account/agent-payment/check', {}));
+  assert.doesNotThrow(() => assertAdminPaymentTransport({}, '/api/admin/account/check', {}));
+  assert.doesNotThrow(() => assertAdminPaymentTransport({ LEGACY_CLOUD_TESTS_ENABLED: 'true' }, '/api/admin/account/test-payment', {}));
+});
 
 test('payment jobs are limited to the fixed account, one CNY tests and scoped order reads', () => {
   const input = { ...base(), url: 'https://untrusted.invalid', headers: { Cookie: 'private' }, script: 'private' };

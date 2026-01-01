@@ -1,6 +1,15 @@
 import { ApiError, validateOrder, hash, accessToken, publicOrder } from './lib.js';
 import { createPayment } from './provider.js';
 
+export function assertAdminPaymentTransport(env, path, body = {}) {
+  if (env.LEGACY_CLOUD_TESTS_ENABLED === 'true') return;
+  const legacyPayment = ['/api/admin/account/test-payment', '/api/admin/account/check-payment'].includes(path) && body.transport !== 'agent';
+  const legacyBrowser = ['/api/admin/account/payment-challenge/start', '/api/admin/account/payment-challenge/complete'].includes(path)
+    || path === '/api/admin/account/check' && body.transport === 'browser'
+    || path === '/api/admin/account/authorize/connectivity' && body.transport === 'browser';
+  if (legacyPayment || legacyBrowser) throw new ApiError(409, 'LEGACY_TRANSPORT_RETIRED', '旧 Cloudflare 测试通道已停用。请重新加载后台，使用“自托管浏览器”中的“微信测试码 · 1 CNY”。');
+}
+
 // Receives requests after the admin route's Access, Origin, JSON and rate checks.
 export async function createAdminTestPayment(env, identity, body, fetcher = fetch) {
   if (!env.DEEPSEEK_ACCOUNT_ID || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先固定收款账户并配置订单密钥。');

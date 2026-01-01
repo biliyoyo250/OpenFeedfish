@@ -11,6 +11,7 @@ const loginStart = element('login-start');
 const loginCancel = element('login-cancel');
 const turnstileToggle = element('turnstile-toggle');
 const turnstileSettingsPath = '/api/admin/settings/turnstile';
+const entryHash = window.location.hash;
 let session = null;
 let busy = false;
 const connectionInput = (() => {
@@ -24,6 +25,21 @@ const connectionInput = (() => {
   const callbackPort = Number(values.get('connect_port'));
   return Number.isInteger(callbackPort) && callbackPort >= 1024 && callbackPort <= 65535 ? { callbackPort, state } : { invalid: true };
 })();
+
+function showView(hash) {
+  const view = hash === '#admin-orders' ? 'orders'
+    : hash === '#admin-account' || hash.startsWith('#agent_pair=') || hash.startsWith('#connect_') ? 'account' : 'home';
+  for (const section of document.querySelectorAll('[data-admin-view]')) section.hidden = section.dataset.adminView !== view;
+  for (const link of document.querySelectorAll('.admin-header nav a')) {
+    if (link.hash === `#admin-${view}`) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  if (hash === '#agent-payment-panel') {
+    const panel = element('agent-payment-panel');
+    panel.open = true;
+    panel.scrollIntoView({ block: 'nearest' });
+  } else window.scrollTo(0, 0);
+}
 
 const orderStates = {
   waiting: ['等待付款', 'warning'], processing: ['平台处理中', 'warning'],
@@ -93,6 +109,9 @@ function lockAccess() {
   element('orders-container').hidden = true;
   element('orders-loading').hidden = true;
   element('orders-empty').hidden = true;
+  element('admin-recent-orders').replaceChildren();
+  element('admin-recent-state').textContent = '登录后查看账单。';
+  element('admin-recent-state').hidden = false;
 }
 
 async function request(path, body) {
@@ -171,6 +190,37 @@ function orderDetails(order) {
   return details;
 }
 
+function amountLabel(order) {
+  const amount = Number(order.amount);
+  return order.currency === 'CNY' && Number.isFinite(amount) ? `¥${amount.toFixed(2)} CNY` : '金额待确认';
+}
+
+function orderStatus(order) {
+  return orderStates[String(order.paymentState || order.status).toLowerCase()] || ['待核对', 'neutral'];
+}
+
+function renderRecentOrders(orders) {
+  const list = element('admin-recent-orders');
+  const rows = document.createDocumentFragment();
+  for (const order of orders.slice(0, 5)) {
+    const row = document.createElement('li');
+    const link = document.createElement('a');
+    link.href = '#admin-orders';
+    const note = document.createElement('span');
+    note.append(textNode('strong', 'order-nickname', order.nickname || '匿名'), textNode('span', 'order-time', dateLabel(order.createdAt)));
+    const total = document.createElement('span');
+    const [label, tone] = orderStatus(order);
+    total.append(textNode('strong', 'order-amount', amountLabel(order)), textNode('span', `status-badge ${tone}`, label));
+    link.append(note, total);
+    row.append(link);
+    rows.append(row);
+  }
+  list.replaceChildren(rows);
+  const state = element('admin-recent-state');
+  state.textContent = '暂无账单';
+  state.hidden = orders.length !== 0;
+}
+
 function renderOrders(orders) {
   const body = element('orders-body');
   const rows = document.createDocumentFragment();
@@ -185,12 +235,10 @@ function renderOrders(orders) {
     const noteCell = document.createElement('td');
     noteCell.append(textNode('div', 'order-nickname', order.nickname || '匿名的心意'), orderDetails(order));
     const amountCell = document.createElement('td');
-    const amount = Number(order.amount);
-    const amountLabel = order.currency === 'CNY' && Number.isFinite(amount) ? `¥${amount.toFixed(2)} CNY` : '金额待确认';
-    amountCell.append(textNode('div', 'order-amount', amountLabel), textNode('div', 'order-method', order.paymentMethod === 'wechat' ? '微信支付' : order.paymentMethod === 'alipay' ? '支付宝' : '待确认'));
+    amountCell.append(textNode('div', 'order-amount', amountLabel(order)), textNode('div', 'order-method', order.paymentMethod === 'wechat' ? '微信支付' : order.paymentMethod === 'alipay' ? '支付宝' : '待确认'));
     const statusCell = document.createElement('td');
     const paymentState = String(order.paymentState || order.status).toLowerCase();
-    const status = orderStates[paymentState] || ['待核对', 'neutral'];
+    const status = orderStatus(order);
     statusCell.append(textNode('span', `status-badge ${status[1]}`, status[0]));
     if (paymentState === 'expired') statusCell.append(textNode('div', 'status-detail', '仍核对最终结果'));
     row.append(timeCell, noteCell, amountCell, statusCell);
@@ -200,6 +248,7 @@ function renderOrders(orders) {
   element('orders-loading').hidden = true;
   element('orders-empty').hidden = orders.length !== 0;
   element('orders-container').hidden = orders.length === 0;
+  renderRecentOrders(orders);
 }
 
 async function loadOrders() {
@@ -216,6 +265,9 @@ async function loadOrders() {
     if (session) {
       element('orders-error').textContent = error.message;
       element('orders-error').hidden = false;
+      const state = element('admin-recent-state');
+      state.textContent = error.message;
+      state.hidden = false;
     }
   }
   return false;
@@ -319,7 +371,9 @@ refreshButton.addEventListener('click', async () => {
 
 window.addEventListener('pagehide', () => { form.reset(); });
 window.addEventListener('feedfish:agent-order-updated', () => { void loadOrders(); });
+window.addEventListener('hashchange', () => showView(window.location.hash));
 initBrowserAgent();
+showView(entryHash);
 updateControls();
 refresh().then(async () => {
   if (!connectionInput) return;
@@ -341,6 +395,7 @@ refresh().then(async () => {
   element('orders-loading').hidden = true;
   if (element('access-error').hidden) {
     element('access-state').textContent = '暂未连接';
+    element('admin-recent-state').textContent = '暂时无法读取账单。';
     setNotice(error.message, true);
   }
 });

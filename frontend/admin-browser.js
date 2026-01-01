@@ -9,20 +9,44 @@ export function initBrowserAgent() {
   let socket; let online = false; let paired = false; let bitmapBusy = false; let dragging = false; let moveAt = 0;
   let paymentReady = false; let paymentBusy = false; let testOrder = null; let paymentRender = 0; let renderedQr = null;
   let receivingAccountId = null; let canSelectRecipient = false;
+  const profileRefresh = el('admin-profile-refresh');
+  const profileMessage = el('admin-profile-message');
+  const profileAvatar = el('admin-profile-avatar');
+  const profileFallback = el('admin-profile-fallback');
   const testIds = new Map(); const testButtons = [...document.querySelectorAll('[data-agent-test-method]')];
   const updatePaymentControls = () => {
     for (const button of testButtons) button.disabled = !online || !paymentReady || !receivingAccountId || paymentBusy;
     el('agent-test-check').disabled = !online || !paymentReady || paymentBusy || !testOrder?.id;
     el('agent-select-recipient').disabled = !online || !canSelectRecipient || paymentBusy;
     el('agent-clear-recipient').disabled = !receivingAccountId || paymentBusy;
+    profileRefresh.disabled = !online || !canSelectRecipient || !receivingAccountId || paymentBusy;
   };
-  const values = new URLSearchParams(location.hash.slice(1));
-  if (values.has('agent_pair')) {
+  function readPairingLink() {
+    const values = new URLSearchParams(location.hash.slice(1));
+    if (!values.has('agent_pair')) return;
     const code = values.get('agent_pair');
-    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    history.replaceState(null, '', `${location.pathname}${location.search}#admin-account`);
     if (validPairCode(code)) el('agent-pair-code').value = code;
   }
+  readPairingLink();
+  window.addEventListener('hashchange', readPairingLink);
   const notice = (text) => { if (el('agent-notice').textContent !== text) el('agent-notice').textContent = text; };
+  const paymentNotice = (text) => { el('agent-test-notice').textContent = text; };
+  function showAvatar(loaded) {
+    profileAvatar.hidden = !loaded;
+    profileFallback.hidden = loaded;
+  }
+  profileAvatar.addEventListener('load', () => showAvatar(profileAvatar.hasAttribute('src')));
+  profileAvatar.addEventListener('error', () => showAvatar(false));
+  function renderProfile(profile, selected) {
+    el('admin-profile-name').textContent = profile?.nickname || (selected ? 'DeepSeek 账号' : '未启用收款账号');
+    el('admin-balance').textContent = typeof profile?.balance === 'string' ? `¥${profile.balance}` : '—';
+    const avatar = profile?.avatarUrl || null;
+    if (profileAvatar.getAttribute('src') === avatar) return;
+    showAvatar(false);
+    if (avatar) profileAvatar.src = avatar;
+    else profileAvatar.removeAttribute('src');
+  }
   const controls = (enabled) => {
     for (const button of document.querySelectorAll('[data-agent-command]')) button.disabled = !enabled;
     el('agent-text').disabled = !enabled; el('agent-send-text').disabled = !enabled;
@@ -44,8 +68,12 @@ export function initBrowserAgent() {
       const previousOnline = online; const previousPaired = paired;
       online = data.online === true; paired = data.configured === true;
       const nextRecipient = data.receivingAccountId || null;
-      if (nextRecipient !== receivingAccountId) testIds.clear();
+      if (nextRecipient !== receivingAccountId) {
+        testIds.clear();
+        profileMessage.textContent = '';
+      }
       receivingAccountId = nextRecipient;
+      renderProfile(receivingAccountId ? data.profile : null, Boolean(receivingAccountId));
       canSelectRecipient = data.paymentProtocol === PAYMENT_PROTOCOL;
       paymentReady = maxPaymentAmount(data.paymentProtocol) > 0; updatePaymentControls();
       el('agent-recipient-status').textContent = receivingAccountId ? '收款账号已启用。' : '尚未启用收款账号。';
@@ -60,10 +88,30 @@ export function initBrowserAgent() {
       }
       else if (paired && !online && (!previousPaired || previousOnline)) notice('已配对，正在等待浏览器启动；上线后页面会自动更新。');
     },
-    onError: (error) => notice(error.message),
+    onError: (error) => {
+      notice(error.message);
+      if (error.code === 'ACCESS_DENIED') renderProfile(null, false);
+    },
     onTimeout: () => notice('尚未收到服务连接，请检查终端日志；点击“刷新”可重新等待。'),
   });
   const refresh = () => statusWatcher.start();
+  profileRefresh.addEventListener('click', async () => {
+    if (profileRefresh.disabled) return;
+    paymentBusy = true;
+    updatePaymentControls();
+    profileMessage.textContent = '正在核验收款账号并读取资料…';
+    try {
+      const result = await api('/api/admin/account/check', { transport: 'agent' });
+      await refresh();
+      profileMessage.textContent = result.profile ? '已同步账号资料。' : '账号已核验。请重启 browser-agent 加载新版，再刷新账号资料。';
+    } catch (error) {
+      await refresh();
+      profileMessage.textContent = error.message;
+    } finally {
+      paymentBusy = false;
+      updatePaymentControls();
+    }
+  });
   async function changeRecipient(action) {
     if (paymentBusy) return;
     paymentBusy = true;
@@ -103,11 +151,11 @@ export function initBrowserAgent() {
       if (!await showTestOrder(order)) return;
       if (previous?.id !== order.id || previous?.paymentState !== order.paymentState) {
         ordersChanged();
-        if (order.paymentState === 'paid') notice('DeepSeek 已确认付款，账单已记为“已支付”，付款码已收起。');
+        if (order.paymentState === 'paid') paymentNotice('DeepSeek 已确认付款，账单已记为“已支付”，付款码已收起。');
       }
     },
-    onError: (error) => notice(`账单自动同步已暂停。${error.message}`),
-    onTimeout: () => notice('自动同步已暂停，后台仍会定时核对。可点击“核对测试账单”查看最新结果。'),
+    onError: (error) => paymentNotice(`账单自动同步已暂停。${error.message}`),
+    onTimeout: () => paymentNotice('自动同步已暂停，后台仍会定时核对。可点击“核对测试账单”查看最新结果。'),
   });
   for (const button of testButtons) button.addEventListener('click', async () => {
     if (button.disabled || paymentBusy) return;
@@ -116,14 +164,14 @@ export function initBrowserAgent() {
     const oldNotice = el('action-notice'); oldNotice.hidden = true; oldNotice.textContent = '';
     orderWatcher.stop(); paymentRender++;
     el('agent-test-qr').hidden = true; el('agent-test-result').textContent = ''; testOrder = null; el('agent-test-check').hidden = true;
-    paymentBusy = true; updatePaymentControls(); notice('正在通过已登录浏览器生成 1 CNY 测试账单，只请求一次，请等待…');
+    paymentBusy = true; updatePaymentControls(); paymentNotice('正在通过已登录浏览器生成 1 CNY 测试账单，只请求一次，请等待…');
     try {
       const order = await api('/api/admin/account/test-payment', { transport: 'agent', paymentMethod: method, requestId: testIds.get(method) });
-      await showTestOrder(order); ordersChanged(); notice(order.qrCode ? '已生成 1 CNY 测试码。付款后会自动同步官方结果，也可手动核对。' : '已读取原测试账单，当前没有待付款二维码。');
+      await showTestOrder(order); ordersChanged(); paymentNotice(order.qrCode ? '已生成 1 CNY 测试码。付款后会自动同步官方结果，也可手动核对。' : '已读取原测试账单，当前没有待付款二维码。');
     } catch (error) {
       const status = error.diagnostic?.upstreamStatus;
       const challenge = ['captcha', 'challenge'].includes(error.diagnostic?.upstreamChallenge) ? ' 官网要求浏览器验证。' : '';
-      notice(`自托管取码未完成。${error.message}${Number.isInteger(status) ? `（HTTP ${status}）` : ''}${challenge} 若结果不确定，请核对原账单，避免新建另一笔。`);
+      paymentNotice(`自托管取码未完成。${error.message}${Number.isInteger(status) ? `（HTTP ${status}）` : ''}${challenge} 若结果不确定，请核对原账单，避免新建另一笔。`);
       ordersChanged();
     } finally { paymentBusy = false; updatePaymentControls(); if (testOrder) void orderWatcher.start(); }
   });
@@ -131,8 +179,8 @@ export function initBrowserAgent() {
     if (!testOrder?.id || paymentBusy) return;
     orderWatcher.stop(); paymentRender++;
     paymentBusy = true; updatePaymentControls();
-    try { await showTestOrder(await api('/api/admin/account/agent-payment/check', { id: testOrder.id })); ordersChanged(); notice('已核对官方订单，最近账单也已更新。'); }
-    catch (error) { notice(error.message); }
+    try { await showTestOrder(await api('/api/admin/account/agent-payment/check', { id: testOrder.id })); ordersChanged(); paymentNotice('已核对官方订单，最近账单也已更新。'); }
+    catch (error) { paymentNotice(error.message); }
     finally { paymentBusy = false; updatePaymentControls(); void orderWatcher.start(); }
   });
   function send(message) {

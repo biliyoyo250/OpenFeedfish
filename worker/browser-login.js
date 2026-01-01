@@ -42,6 +42,14 @@ async function terminate(browser) {
   try { const cdp = await browser.newBrowserCDPSession(); await cdp.send('Browser.close'); } catch { /* The connection closes with the browser. */ }
   await browser.close().catch(() => {});
 }
+async function connect(env, sdk, sessionId) {
+  // Use the browser's persistent default context. Contexts created by
+  // newContext() are disposed with the Worker connection, killing Live View.
+  // This public endpoint form is also used by the SDK's connectOverCDP helper.
+  const endpoint = new URL(sdk.endpointURLString(env.BROWSER, { sessionId }));
+  endpoint.searchParams.set('persistent', 'true');
+  return sdk.connect(endpoint);
+}
 export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
   available(env);
   sdk ||= await sdkFor();
@@ -52,7 +60,7 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
     let browser;
     try {
       const saved = await unseal(previous.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
-      browser = await sdk.connect(env.BROWSER, saved.sessionId);
+      browser = await connect(env, sdk, saved.sessionId);
       const page = await pageFor(browser);
       if (!page) throw missing();
       return { id: previous.id, expiresAt: new Date(previous.expires_at).toISOString(), liveViewUrl: await viewFor(page) };
@@ -71,8 +79,9 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
   let browser;
   try {
     const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 180000 });
-    browser = await sdk.connect(env.BROWSER, sessionId);
-    const context = browser.contexts()[0] || await browser.newContext();
+    browser = await connect(env, sdk, sessionId);
+    const context = browser.contexts()[0];
+    if (!context) throw new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试。');
     const page = await context.newPage();
     await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 20000 });
     const liveViewUrl = await viewFor(page);
@@ -111,7 +120,7 @@ export async function completeBrowserLogin(env, identity, id, saveSession, sdk, 
   try {
     sdk ||= await sdkFor();
     const session = await unseal(row.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
-    browser = await sdk.connect(env.BROWSER, session.sessionId);
+    browser = await connect(env, sdk, session.sessionId);
     const page = await pageFor(browser); if (!page) throw missing();
     const responsePromise = page.waitForResponse((response) => response.url() === `${origin}/auth-api/v0/users/current` && response.request().method() === 'GET', { timeout: 15000 });
     // Attach the rejection handler before navigation to avoid an unhandled
@@ -155,7 +164,7 @@ async function closeRow(env, row, sdk) {
     if (row.sealed_session && env.BROWSER) {
       sdk ||= await sdkFor();
       const saved = await unseal(row.sealed_session, env.ACCOUNT_ENCRYPTION_KEY);
-      const browser = await sdk.connect(env.BROWSER, saved.sessionId);
+      const browser = await connect(env, sdk, saved.sessionId);
       await terminate(browser);
     }
   } catch { /* Expired sessions may already have been closed by Cloudflare. */ }

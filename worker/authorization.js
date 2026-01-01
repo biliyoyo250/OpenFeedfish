@@ -20,11 +20,17 @@ async function authRequest(method, body, fetcher) {
   let response, data;
   try {
     response = await fetcher(`${origin}/auth-api/v0/dsh/${method}`, { method: 'POST', headers: { ...platformClientHeaders, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(12000) });
-    if (!response.headers.get('content-type')?.includes('application/json')) throw new Error();
+  } catch { throw new ApiError(503, 'AUTH_NETWORK', 'Cloudflare 暂未连通 DeepSeek 授权接口。'); }
+  if (!response.headers.get('content-type')?.includes('application/json')) {
+    const challenge = response.headers.get('x-amzn-waf-action');
+    if (challenge === 'captcha' || challenge === 'challenge') throw new ApiError(503, 'AUTH_CHALLENGE', `DeepSeek 要求验证 Cloudflare 出站请求（HTTP ${response.status}）。`);
+    throw new ApiError(503, 'AUTH_NOT_JSON', `DeepSeek 授权接口未返回 JSON（HTTP ${response.status}）。`);
+  }
+  try {
     const text = await response.text();
     if (text.length > 131072) throw new Error();
     data = JSON.parse(text);
-  } catch { throw new ApiError(503, 'AUTH_UNAVAILABLE', 'DeepSeek 暂未接受授权请求，请稍后重试。'); }
+  } catch { throw new ApiError(502, 'AUTH_PROTOCOL', 'DeepSeek 授权响应格式不正确。'); }
   if (!response.ok || data.code !== 0 || data.data?.biz_code !== 0) throw new ApiError(502, 'AUTH_REJECTED', 'DeepSeek 未完成这次授权，请重新连接。');
   return data.data.biz_data;
 }

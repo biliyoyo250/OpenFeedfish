@@ -125,6 +125,11 @@ test('authorization initialization never forwards an off-origin approval URL', a
   await assert.rejects(startAuthorization(env, owner, input, async () => Response.json({ code: 0, data: { biz_code: 0, biz_data: { authorize_id: 'id', authorize_url: 'https://evil.example/dsh/authorize', expires_in: 600 } } })), { code: 'AUTH_PROTOCOL' });
 });
 
+test('authorization classifies a cloud egress challenge without echoing upstream content', async () => {
+  const { env, owner, input } = authorizationSetup();
+  await assert.rejects(startAuthorization(env, owner, input, async () => new Response('private-upstream-content', { status: 405, headers: { 'Content-Type': 'text/html', 'x-amzn-waf-action': 'captcha' } })), (error) => error.code === 'AUTH_CHALLENGE' && error.message.includes('405') && !error.message.includes('private-upstream-content'));
+});
+
 test('loopback receiver enforces Host, Origin, state and one callback; forwards only code in a fragment', async () => {
   const state = 'a'.repeat(43); const receiver = await createReceiver({ state, ttlMs: 10000 }); const local = new URL(receiver.receiverUrl);
   try {

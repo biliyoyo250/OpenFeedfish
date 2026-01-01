@@ -78,7 +78,7 @@ export async function startBrowserLogin(env, identity, sdk, now = Date.now()) {
   if (!claim.meta.changes) throw new ApiError(409, 'LOGIN_BUSY', '登录窗口正在处理，请稍后重试。');
   let browser;
   try {
-    const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 180000 });
+    const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 180000, recording: false });
     browser = await connect(env, sdk, sessionId);
     const context = browser.contexts()[0];
     if (!context) throw new ApiError(503, 'LOGIN_UNAVAILABLE', '登录窗口暂不可用，请稍后重试。');
@@ -131,7 +131,7 @@ export async function completeBrowserLogin(env, identity, id, saveSession, sdk, 
     if (!response || !response.ok()) throw new ApiError(409, 'LOGIN_PENDING', '请先在官方登录窗口完成登录和验证，再保存会话。');
     const result = await response.json();
     if (result.code !== 0 || result.data?.biz_code !== 0 || !result.data.biz_data?.id) throw new ApiError(409, 'LOGIN_PENDING', '官方平台尚未确认登录，请完成登录后重试。');
-    const credentials = credentialsFromBrowser(response.request().headers(), await page.context().cookies());
+    const credentials = credentialsFromBrowser(await response.request().allHeaders(), await page.context().cookies());
     owned(await rowFor(env), identity, id, Date.now());
     // The existing account importer independently verifies these credentials
     // from the Worker, checks CNY and atomically enforces the fixed account.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { browserCommand, accountResult, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
-import { serverOrigin, executeBrowserCommand, handshakeFailure, closeFailure, agentFailureMessage } from '../scripts/browser-agent.mjs';
+import { serverOrigin, executeBrowserCommand, checkBrowserAccount, handshakeFailure, closeFailure, agentFailureMessage } from '../scripts/browser-agent.mjs';
 import { BrowserAgentRelay } from '../worker/browser-agent-relay.js';
 import worker from '../worker/index.js';
 const id = () => crypto.randomUUID();
@@ -25,6 +25,15 @@ test('account results project fixed identity and never echo upstream credentials
   assert.deepEqual(accountResult({ ok: true, accountId: 'fixed', currency: 'USD', eligible: true }, 'fixed'), { ok: false, code: 'ACCOUNT_INELIGIBLE' });
   assert.deepEqual(accountResult({ ok: false, code: 'UPSTREAM_NOT_JSON', httpStatus: 403, body: 'private', token: 'private' }, 'fixed'), { ok: false, code: 'UPSTREAM_NOT_JSON', httpStatus: 403 });
   assert.deepEqual(accountResult({ ok: false, code: 'private', httpStatus: 'private' }, 'fixed'), { ok: false, code: 'ACCOUNT_CHECK_FAILED' });
+});
+
+test('a verified CNY account retains its eligibility across the agent and relay boundaries', async () => {
+  const page = { url: () => 'https://platform.deepseek.com/usage', evaluate: async () => ({ ok: true, accountId: 'fixed', currency: 'CNY', eligible: true, token: 'never-forward-this' }) };
+  const wire = await checkBrowserAccount(page, 'fixed');
+  assert.deepEqual(wire, { ok: true, accountId: 'fixed', currency: 'CNY', eligible: true });
+  assert.deepEqual(accountResult(wire, 'fixed'), { ok: true, accountId: 'fixed', currency: 'CNY' });
+  page.evaluate = async () => ({ ok: true, accountId: 'fixed', currency: 'CNY', eligible: false });
+  assert.deepEqual(await checkBrowserAccount(page, 'fixed'), { ok: false, code: 'ACCOUNT_INELIGIBLE' });
 });
 
 test('agent server URLs reject plaintext remote hosts and credential-bearing URLs', () => {

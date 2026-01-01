@@ -1,4 +1,5 @@
 import { VIEWPORT, validPairCode, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
+import { createAgentStatusWatcher } from './admin-agent-status.js';
 
 export function initBrowserAgent() {
   const el = (id) => document.getElementById(id);
@@ -10,7 +11,7 @@ export function initBrowserAgent() {
     history.replaceState(null, '', `${location.pathname}${location.search}`);
     if (validPairCode(code)) el('agent-pair-code').value = code;
   }
-  const notice = (text) => { el('agent-notice').textContent = text; };
+  const notice = (text) => { if (el('agent-notice').textContent !== text) el('agent-notice').textContent = text; };
   const controls = (enabled) => {
     for (const button of document.querySelectorAll('[data-agent-command]')) button.disabled = !enabled;
     el('agent-text').disabled = !enabled; el('agent-send-text').disabled = !enabled;
@@ -24,15 +25,23 @@ export function initBrowserAgent() {
     }
     return result;
   }
-  async function refresh() {
-    try {
-      const data = await api('status'); online = data.online === true; paired = data.configured === true;
+  const statusWatcher = createAgentStatusWatcher({
+    load: () => api('status'),
+    visible: () => document.visibilityState !== 'hidden',
+    onStatus: (data) => {
+      const previousOnline = online; const previousPaired = paired;
+      online = data.online === true; paired = data.configured === true;
       el('agent-status').textContent = online ? `${data.name} · 在线` : paired ? `${data.name} · 离线` : '未配对';
       el('agent-open').disabled = !online || [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket?.readyState);
       el('agent-revoke').disabled = !paired;
       el('agent-approve').disabled = !!data.demo;
-    } catch (error) { notice(error.message); }
-  }
+      if (online && !previousOnline) notice('浏览器已在线。点击“打开实时窗口”查看画面。');
+      else if (paired && !online && (!previousPaired || previousOnline)) notice('已配对，正在等待浏览器启动；上线后页面会自动更新。');
+    },
+    onError: (error) => notice(error.message),
+    onTimeout: () => notice('尚未收到服务连接，请检查终端日志；点击“刷新”可重新等待。'),
+  });
+  const refresh = () => statusWatcher.start();
   function send(message) {
     if (socket?.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(message.type === 'frame-ack' ? message : { ...message, id: crypto.randomUUID() }));
@@ -44,7 +53,7 @@ export function initBrowserAgent() {
     if (!validPairCode(code)) { notice('请输入服务端显示的配对码，例如 ABCD-2345。'); return; }
     if (paired && !confirm('更换已配对的浏览器服务？旧设备的远程连接权限会被撤销；本地浏览器资料和现有账单会保留。')) return;
     el('agent-approve').disabled = true;
-    try { const result = await api('approve', { code, replace: paired }); el('agent-pair-code').value = ''; notice(`已配对 ${result.name}，等待服务上线。`); await refresh(); }
+    try { const result = await api('approve', { code, replace: paired }); el('agent-pair-code').value = ''; notice(`已配对 ${result.name}，等待浏览器启动；状态会自动更新。`); await refresh(); }
     catch (error) { notice(error.message); }
     finally { el('agent-approve').disabled = false; }
   });
@@ -73,7 +82,7 @@ export function initBrowserAgent() {
       }
       if (event.data === 'pong') return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === 'presence' && !data.online) { clearScreen(); notice('浏览器服务已离线。'); }
+      if (data.type === 'presence' && !data.online) { clearScreen(); notice('浏览器服务已离线，正在等待重连。'); void refresh(); }
       if (data.type === 'error') notice('操作未发送：服务离线或请求无效。');
       if (data.type === 'result' && data.command === 'check-account') {
         const messages = { LOGIN_REQUIRED: '请先在画面中登录 DeepSeek。', ACCOUNT_MISMATCH: '登录账户与固定收款账户不一致。', ACCOUNT_INELIGIBLE: '账户币种或资格不符合要求。', SESSION_EXPIRED: '登录已失效，请在画面中重新登录。', AUTH_TOKEN_MISSING: '官方接口未识别登录 Token。', UPSTREAM_NOT_JSON: '本机账户接口仍未返回 JSON。', UPSTREAM_UNAVAILABLE: '本机暂未连通账户接口。' };
@@ -102,6 +111,7 @@ export function initBrowserAgent() {
     else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); send({ type: 'input', event: 'text', text: event.key }); }
   });
   el('agent-text-form').addEventListener('submit', (event) => { event.preventDefault(); const text = el('agent-text').value; el('agent-text').value = ''; if (text) send({ type: 'input', event: 'text', text }); canvas.focus(); });
-  window.addEventListener('pagehide', () => { socket?.close(); clearScreen(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') statusWatcher.stop(); else void refresh(); });
+  window.addEventListener('pagehide', () => { statusWatcher.stop(); socket?.close(); clearScreen(); });
   controls(false); void refresh();
 }

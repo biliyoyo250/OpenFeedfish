@@ -70,7 +70,10 @@ export async function checkBrowserAccount(page, expectedId) {
     } catch { return { ok: false, code: 'UPSTREAM_UNAVAILABLE' }; }
     finally { token = undefined; }
   });
-  return accountResult(result, expectedId);
+  const checked = accountResult(result, expectedId);
+  // The relay checks eligibility again before projecting the admin result.
+  // Keep the verified flag on this private agent-to-relay message.
+  return checked.ok ? { ...checked, eligible: true } : checked;
 }
 
 export async function executeBrowserCommand(page, input, expectedId) {
@@ -185,9 +188,9 @@ export async function runAgent() {
       let failure = null;
       await new Promise((finished) => {
         socket = new WebSocket(`${origin.replace(/^http/, 'ws')}/api/browser-agent/connect`, { headers: { Authorization: `Bearer ${device.key}` }, maxPayload: 8192, followRedirects: false, handshakeTimeout: 15000 });
-        let lastPong = Date.now();
+        let lastPong = Date.now(); let confirmed = false;
         const timer = setInterval(() => { if (Date.now() - lastPong > 45000) socket.terminate(); else if (socket.readyState === WebSocket.OPEN) socket.send('ping'); }, 15000);
-        socket.on('open', () => { attempt = 0; console.log('浏览器服务已连接。请在 /admin 打开实时窗口。'); });
+        socket.on('open', () => { console.log('控制通道已建立，正在确认浏览器服务。'); });
         socket.on('unexpected-response', (_request, response) => {
           // Only known JSON device errors can establish a pairing failure.
           // Never echo edge HTML, headers, credentials, or upstream messages.
@@ -207,7 +210,12 @@ export async function runAgent() {
             if (connection !== socket || connection.readyState !== WebSocket.OPEN) return;
             if (message.type === 'view') return view(message.active === true);
             if (message.type === 'frame-ack') { credit = true; pump(); return; }
-            if (message.type === 'ready') { expectedId = message.expectedAccountId; return; }
+            if (message.type === 'ready') {
+              if (message.protocol !== AGENT_PROTOCOL || message.role !== 'agent') { connection.close(1002); return; }
+              expectedId = message.expectedAccountId;
+              if (!confirmed) { confirmed = true; attempt = 0; console.log('浏览器服务已上线。画面在 /admin 的“打开实时窗口”中，默认不弹出桌面窗口。'); }
+              return;
+            }
             if (!viewing) return;
             let command; try { command = browserCommand(message); } catch { return; }
             if (command.type === 'input' && Date.now() - receivedAt > 5000) return;

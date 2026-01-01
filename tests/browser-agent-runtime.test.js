@@ -41,6 +41,13 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     const adminHeaders = { Upgrade: 'websocket', 'X-Agent-Admin-Sub': 'approved-admin', 'X-Agent-Admin-Expires': String(Date.now() + 600000) };
     assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Expires': String(Date.now() - 1) })).status, 403);
     const viewer = (await req('/viewer', undefined, adminHeaders)).webSocket; assert.ok(viewer); const viewerMessages = collect(viewer);
+    const orderId = crypto.randomUUID();
+    assert.equal((await req('/notify-order', { id: 'invalid' })).status, 400);
+    assert.equal((await req('/notify-order', { id: orderId, status: 'paid', token: 'must-not-forward' })).status, 200);
+    assert.deepEqual(parsed(await next(viewerMessages, (v) => parsed(v)?.type === 'order-updated')), { type: 'order-updated', id: orderId });
+    agent.send(JSON.stringify({ type: 'order-updated', id: orderId, status: 'paid' }));
+    agent.send('ping'); await next(agentMessages, (v) => v === 'pong');
+    assert.equal(viewerMessages.some((v) => parsed(v)?.type === 'order-updated'), false, 'the browser cannot forge a ledger notification');
     assert.equal((await req('/viewer', undefined, { ...adminHeaders, 'X-Agent-Admin-Sub': 'other-admin' })).status, 409);
     await next(agentMessages, (v) => parsed(v)?.type === 'view' && parsed(v).active === true);
     const command = { id: crypto.randomUUID(), type: 'input', event: 'text', text: 'synthetic-password' };

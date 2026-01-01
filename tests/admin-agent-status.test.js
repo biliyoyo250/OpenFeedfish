@@ -34,3 +34,18 @@ test('offline waiting is bounded and stops after hiding the page, an error, or n
   const unpaired = createAgentStatusWatcher({ ...timers, load: async () => ({ configured: false, online: false }), onStatus: () => {}, onError: assert.fail });
   await unpaired.start(); assert.equal(timers.pending(), 0);
 });
+
+test('payment status watching reads until confirmed success, then stops without creating or checking an upstream order', async () => {
+  const timers = clock(); const states = ['waiting', 'processing', 'paid']; const observed = [];
+  const watch = createAgentStatusWatcher({ ...timers, interval: 3000, load: async () => ({ status: states.length > 1 ? 'pending' : 'paid', paymentState: states.shift() }), keepWaiting: (order) => order.status === 'pending', onStatus: async (order) => { observed.push(order.paymentState); }, onError: assert.fail });
+  await watch.start(); await timers.next(); await timers.next();
+  assert.deepEqual(observed, ['waiting', 'processing', 'paid']); assert.equal(timers.pending(), 0);
+});
+
+test('stopping during asynchronous status rendering cannot restart a stale payment watcher', async () => {
+  const timers = clock(); let finishRender;
+  const watch = createAgentStatusWatcher({ ...timers, load: async () => ({ status: 'pending' }), keepWaiting: () => true, onStatus: () => new Promise((resolve) => { finishRender = resolve; }), onError: assert.fail });
+  const waiting = watch.start(); await Promise.resolve();
+  watch.stop(); finishRender(); await waiting;
+  assert.equal(timers.pending(), 0);
+});

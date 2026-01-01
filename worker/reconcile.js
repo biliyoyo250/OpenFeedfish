@@ -1,5 +1,6 @@
 import { ApiError } from './lib.js';
 import { queryPayment } from './provider.js';
+import { agentRequest } from './browser-agent.js';
 export function detailedState(result, row, now) {
   const states = { CREATED: row.expires_at <= now ? 'expired' : 'waiting', PENDING: 'processing', SUCCESS: 'paid', FAILED: 'failed', REFUNDED: 'refunded', CHARGEBACK: 'chargeback' };
   return result.providerStatus ? states[result.providerStatus] : result.status === 'pending' ? 'waiting' : result.status;
@@ -14,10 +15,15 @@ export async function applyPaymentResult(env, row, result, source, now = Date.no
   const confirmed = result.status === 'paid' ? row.confirmed_at || now : row.confirmed_at;
   const paidAt = row.paid_at || result.paidAt || null;
   if (row.payment_state === state && row.provider_status === (result.providerStatus || null) && row.paid_at === paidAt) return;
-  await env.DB.batch([
+  const updates = await env.DB.batch([
     env.DB.prepare('UPDATE orders SET status=?,payment_state=?,provider_status=?,paid_at=?,confirmed_at=?,last_check_error=NULL,revision=revision+1 WHERE id=? AND revision=?').bind(result.status, state, result.providerStatus || null, paidAt, confirmed || null, row.id, row.revision),
     env.DB.prepare('INSERT INTO payment_events (order_id,state,provider_status,source,observed_at) SELECT ?,?,?,?,? WHERE changes()=1').bind(row.id, state, result.providerStatus || null, source, now)
   ]);
+  // Notify only after the conditional ledger update committed. Delivery is a
+  // hint to re-read D1, never a second authority for payment or a new order.
+  if (updates[0]?.meta?.changes > 0 && row.provider_transport === 'agent' && env.AGENT_RELAY) {
+    await agentRequest(env, '/notify-order', { id: row.id }).catch(() => {});
+  }
 }
 export async function reconcileOrder(env, row, source = 'poll', query = queryPayment) {
   const now = Date.now();

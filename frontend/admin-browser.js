@@ -6,7 +6,7 @@ export function initBrowserAgent() {
   const el = (id) => document.getElementById(id);
   const canvas = el('agent-screen'); const ctx = canvas.getContext('2d');
   let socket; let online = false; let paired = false; let bitmapBusy = false; let dragging = false; let moveAt = 0;
-  let paymentReady = false; let paymentBusy = false; let testOrder = null;
+  let paymentReady = false; let paymentBusy = false; let testOrder = null; let paymentRender = 0; let renderedQr = null;
   const testIds = new Map(); const testButtons = [...document.querySelectorAll('[data-agent-test-method]')];
   const updatePaymentControls = () => { for (const button of testButtons) button.disabled = !online || !paymentReady || paymentBusy; el('agent-test-check').disabled = !online || !paymentReady || paymentBusy || !testOrder?.id; };
   const values = new URLSearchParams(location.hash.slice(1));
@@ -49,35 +49,62 @@ export function initBrowserAgent() {
   });
   const refresh = () => statusWatcher.start();
   async function showTestOrder(order) {
+    const render = ++paymentRender; const needsQr = order.qrCode && renderedQr !== order.qrCode;
     testOrder = order;
-    el('agent-test-qr').hidden = !order.qrCode;
-    if (order.qrCode) { el('agent-test-qr').src = await QRCode.toDataURL(order.qrCode, { width: 440, margin: 3 }); el('agent-test-qr').hidden = false; }
+    el('agent-test-qr').hidden = !order.qrCode || !!needsQr;
     const labels = { waiting: '等待付款', processing: '平台处理中', paid: '已支付', expired: '二维码已过期', failed: '未成功', refunded: '已退款', chargeback: '已拒付', unknown: '待核对' };
-    el('agent-test-result').textContent = `${order.amount} CNY · ${order.paymentMethod === 'wechat' ? '微信' : '支付宝'} · ${labels[order.paymentState] || '等待确认'}`;
+    el('agent-test-result').textContent = `最近测试：${order.amount} CNY · ${order.paymentMethod === 'wechat' ? '微信' : '支付宝'} · ${labels[order.paymentState] || '等待确认'}`;
     el('agent-test-check').hidden = false; updatePaymentControls();
+    if (needsQr) {
+      const image = await QRCode.toDataURL(order.qrCode, { width: 440, margin: 3 });
+      if (render !== paymentRender) return false;
+      el('agent-test-qr').src = image; renderedQr = order.qrCode; el('agent-test-qr').hidden = false;
+    }
+    return render === paymentRender;
   }
+  const ordersChanged = () => window.dispatchEvent(new Event('feedfish:agent-order-updated'));
+  const orderWatcher = createAgentStatusWatcher({
+    load: async () => (await api(`/api/admin/account/agent-payment/status${testOrder?.id ? `?id=${encodeURIComponent(testOrder.id)}` : ''}`)).order,
+    visible: () => document.visibilityState !== 'hidden',
+    keepWaiting: (order) => ['creating', 'pending'].includes(order?.status),
+    interval: 3000, duration: 20 * 60000,
+    onStatus: async (order) => {
+      if (!order) return;
+      const previous = testOrder;
+      if (!await showTestOrder(order)) return;
+      if (previous?.id !== order.id || previous?.paymentState !== order.paymentState) {
+        ordersChanged();
+        if (order.paymentState === 'paid') notice('DeepSeek 已确认付款，账单已记为“已支付”，付款码已收起。');
+      }
+    },
+    onError: (error) => notice(`账单自动同步已暂停。${error.message}`),
+    onTimeout: () => notice('自动同步已暂停，后台仍会定时核对。可点击“核对测试账单”查看最新结果。'),
+  });
   for (const button of testButtons) button.addEventListener('click', async () => {
     if (button.disabled || paymentBusy) return;
     const method = button.dataset.agentTestMethod;
     if (!testIds.has(method)) testIds.set(method, crypto.randomUUID());
     const oldNotice = el('action-notice'); oldNotice.hidden = true; oldNotice.textContent = '';
+    orderWatcher.stop(); paymentRender++;
     el('agent-test-qr').hidden = true; el('agent-test-result').textContent = ''; testOrder = null; el('agent-test-check').hidden = true;
     paymentBusy = true; updatePaymentControls(); notice('正在通过已登录浏览器生成 1 CNY 测试账单，只请求一次，请等待…');
     try {
       const order = await api('/api/admin/account/test-payment', { transport: 'agent', paymentMethod: method, requestId: testIds.get(method) });
-      await showTestOrder(order); notice(order.qrCode ? '已生成 1 CNY 测试码。当前仅验证取码，可点击“核对测试账单”查询官方状态。' : '已读取原测试账单，当前没有待付款二维码。');
+      await showTestOrder(order); ordersChanged(); notice(order.qrCode ? '已生成 1 CNY 测试码。付款后会自动同步官方结果，也可手动核对。' : '已读取原测试账单，当前没有待付款二维码。');
     } catch (error) {
       const status = error.diagnostic?.upstreamStatus;
       const challenge = ['captcha', 'challenge'].includes(error.diagnostic?.upstreamChallenge) ? ' 官网要求浏览器验证。' : '';
       notice(`自托管取码未完成。${error.message}${Number.isInteger(status) ? `（HTTP ${status}）` : ''}${challenge} 若结果不确定，请核对原账单，避免新建另一笔。`);
-    } finally { paymentBusy = false; updatePaymentControls(); }
+      ordersChanged();
+    } finally { paymentBusy = false; updatePaymentControls(); if (testOrder) void orderWatcher.start(); }
   });
   el('agent-test-check').addEventListener('click', async () => {
     if (!testOrder?.id || paymentBusy) return;
+    orderWatcher.stop(); paymentRender++;
     paymentBusy = true; updatePaymentControls();
-    try { await showTestOrder(await api('/api/admin/account/agent-payment/check', { id: testOrder.id })); notice('已核对官方订单，最近账单也已更新。'); }
+    try { await showTestOrder(await api('/api/admin/account/agent-payment/check', { id: testOrder.id })); ordersChanged(); notice('已核对官方订单，最近账单也已更新。'); }
     catch (error) { notice(error.message); }
-    finally { paymentBusy = false; updatePaymentControls(); }
+    finally { paymentBusy = false; updatePaymentControls(); void orderWatcher.start(); }
   });
   function send(message) {
     if (socket?.readyState !== WebSocket.OPEN) return;
@@ -119,11 +146,12 @@ export function initBrowserAgent() {
       }
       if (event.data === 'pong') return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
+      if (data.type === 'order-updated' && data.id === testOrder?.id && !paymentBusy) void orderWatcher.start();
       if (data.type === 'presence' && !data.online) { clearScreen(); notice('浏览器服务已离线，正在等待重连。'); void refresh(); }
       if (data.type === 'error') notice(data.code === 'AGENT_BUSY' ? '浏览器正在取码或查单，请等待当前任务结束。' : '操作未发送：服务离线或请求无效。');
       if (data.type === 'result' && data.command === 'check-account') {
         const messages = { LOGIN_REQUIRED: '请先在画面中登录 DeepSeek。', ACCOUNT_MISMATCH: '登录账户与固定收款账户不一致。', ACCOUNT_INELIGIBLE: '账户币种或资格不符合要求。', SESSION_EXPIRED: '登录已失效，请在画面中重新登录。', AUTH_TOKEN_MISSING: '官方接口未识别登录 Token。', UPSTREAM_NOT_JSON: '本机账户接口仍未返回 JSON。', UPSTREAM_UNAVAILABLE: '本机暂未连通账户接口。' };
-        notice(data.result.ok ? '本机浏览器已核对固定账户和 CNY。支付取码与到账尚待验证。' : `${messages[data.result.code] || '账户核验未完成。'}${data.result.httpStatus ? ` HTTP ${data.result.httpStatus}` : ''}`);
+        notice(data.result.ok ? '本机浏览器已核对固定账户和 CNY。' : `${messages[data.result.code] || '账户核验未完成。'}${data.result.httpStatus ? ` HTTP ${data.result.httpStatus}` : ''}`);
       }
     });
     socket.addEventListener('close', (event) => {
@@ -148,7 +176,10 @@ export function initBrowserAgent() {
     else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); send({ type: 'input', event: 'text', text: event.key }); }
   });
   el('agent-text-form').addEventListener('submit', (event) => { event.preventDefault(); const text = el('agent-text').value; el('agent-text').value = ''; if (text) send({ type: 'input', event: 'text', text }); canvas.focus(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') statusWatcher.stop(); else void refresh(); });
-  window.addEventListener('pagehide', () => { statusWatcher.stop(); socket?.close(); clearScreen(); });
-  controls(false); void refresh();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { statusWatcher.stop(); orderWatcher.stop(); paymentRender++; }
+    else { void refresh(); if (!paymentBusy) void orderWatcher.start(); }
+  });
+  window.addEventListener('pagehide', () => { statusWatcher.stop(); orderWatcher.stop(); paymentRender++; socket?.close(); clearScreen(); });
+  controls(false); void refresh(); void orderWatcher.start();
 }

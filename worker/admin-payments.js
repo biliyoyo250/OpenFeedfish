@@ -1,6 +1,18 @@
 import { ApiError, validateOrder, hash, accessToken, publicOrder } from './lib.js';
 import { createPayment } from './provider.js';
 
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+// Access-protected callers only. Reading a saved result never contacts DeepSeek.
+export async function readAgentTestOrder(env, id = null) {
+  if (id !== null && (typeof id !== 'string' || !uuid.test(id))) throw new ApiError(400, 'INVALID_ORDER_ID', '测试账单标识无效。');
+  const row = id === null
+    ? await env.DB.prepare("SELECT * FROM orders WHERE is_demo=0 AND provider_transport='agent' ORDER BY created_at DESC LIMIT 1").first()
+    : await env.DB.prepare("SELECT * FROM orders WHERE id=? AND is_demo=0 AND provider_transport='agent'").bind(id).first();
+  if (id !== null && !row) throw new ApiError(404, 'NOT_FOUND', '未找到自托管测试账单。');
+  return row ? publicOrder(row) : null;
+}
+
 export function assertAdminPaymentTransport(env, path, body = {}) {
   if (env.LEGACY_CLOUD_TESTS_ENABLED === 'true') return;
   const legacyPayment = ['/api/admin/account/test-payment', '/api/admin/account/check-payment'].includes(path) && body.transport !== 'agent';
@@ -13,7 +25,7 @@ export function assertAdminPaymentTransport(env, path, body = {}) {
 // Receives requests after the admin route's Access, Origin, JSON and rate checks.
 export async function createAdminTestPayment(env, identity, body, fetcher = fetch) {
   if (!env.DEEPSEEK_ACCOUNT_ID || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先固定收款账户并配置订单密钥。');
-  if (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId)) throw new ApiError(400, 'INVALID_IDEMPOTENCY_KEY', '测试请求标识无效。');
+  if (typeof body.requestId !== 'string' || !uuid.test(body.requestId)) throw new ApiError(400, 'INVALID_IDEMPOTENCY_KEY', '测试请求标识无效。');
   const transport = env.PAYMENT_TRANSPORT === 'agent' ? 'agent' : 'worker';
   const input = validateOrder({ amount: '1', paymentMethod: body.paymentMethod, nickname: transport === 'agent' ? '自托管测试' : '通道测试', message: '管理员验证支付通道' });
   const key = await hash(`admin-test:${identity.sub}:${body.requestId}`);

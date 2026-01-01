@@ -5,7 +5,7 @@ import { inspectAccount, verifyAccount, accountFromProfile, queryPayment } from 
 import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus, verifyAccountInBrowser } from './browser-login.js';
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
-import { createAdminTestPayment, assertAdminPaymentTransport } from './admin-payments.js';
+import { createAdminTestPayment, assertAdminPaymentTransport, readAgentTestOrder } from './admin-payments.js';
 import { browserPaymentFetcher } from './browser-payments.js';
 import { startPaymentChallenge, paymentChallengeView, completePaymentChallenge, cancelPaymentChallenge } from './payment-challenge.js';
 import { connectManualSession } from './manual-session.js';
@@ -42,6 +42,7 @@ export async function handleAdmin(request, env) {
   }
   if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true }) : agentRequest(env, '/status');
+  if (path === '/api/admin/account/agent-payment/status' && request.method === 'GET') return json({ order: identity.demo ? null : await readAgentTestOrder(env, new URL(request.url).searchParams.get('id')) });
   if (path === '/api/admin/browser-agent/socket' && request.method === 'GET' && !identity.demo) { assertOrigin(request, false); return agentViewer(request, env, identity); }
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
   if (path === '/api/admin/account/authorize/diagnostics' && request.method === 'GET' && !identity.demo) return json({ failure: await lastAuthorizationFailure(env) });

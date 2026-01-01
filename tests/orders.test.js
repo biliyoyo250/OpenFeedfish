@@ -7,7 +7,7 @@ import worker from '../worker/index.js';
 import { ApiError, parseAmount, formatAmount, isDemo, validateOrder, verifyTurnstile } from '../worker/lib.js';
 import { startAuthorization, completeAuthorization, authorizationState, cancelAuthorization, cleanupAuthorization, lastAuthorizationFailure } from '../worker/authorization.js';
 import { accountErrorMessage } from '../frontend/admin-errors.js';
-import { createAdminTestPayment } from '../worker/admin-payments.js';
+import { createAdminTestPayment, readAgentTestOrder } from '../worker/admin-payments.js';
 import { credentialsFromInput, connectManualSession } from '../worker/manual-session.js';
 import { stagePendingAuthorization, pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization, cleanupPendingAuthorization } from '../worker/pending-authorization.js';
 import { createReceiver } from '../scripts/connect-account.mjs';
@@ -769,6 +769,47 @@ test('confirmed time is separate from provider paid_at; stale duplicate callback
   assert.equal(db.prepare('SELECT count(*) AS n FROM payment_events').get().n, 1);
   await applyPaymentResult(env, paid, { status: 'pending', providerStatus: 'CREATED' }, 'poll', now + 2000);
   assert.equal(db.prepare('SELECT status FROM orders WHERE id=?').get(order.id).status, 'paid');
+});
+test('self-hosted ledger notifications follow committed changes, ignore stale duplicates and tolerate delivery failure', async () => {
+  const { env, create, db } = setup(); const order = await (await create()).json();
+  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent' WHERE id=?").run(order.id);
+  const notices = [];
+  env.AGENT_RELAY = { idFromName: () => 'fixed-account-browser', get: () => ({ fetch: async (request) => {
+    assert.equal(new URL(request.url).pathname, '/notify-order');
+    const body = await request.json(); assert.deepEqual(body, { id: order.id });
+    assert.equal(db.prepare('SELECT status FROM orders WHERE id=?').get(order.id).status, 'paid');
+    assert.equal(db.prepare('SELECT count(*) AS n FROM payment_events').get().n, notices.length + 1);
+    notices.push(body); throw new Error('viewer unavailable');
+  } }) };
+  const row = db.prepare('SELECT * FROM orders WHERE id=?').get(order.id);
+  await applyPaymentResult(env, row, { status: 'paid', providerStatus: 'SUCCESS' }, 'scheduled');
+  await applyPaymentResult(env, row, { status: 'paid', providerStatus: 'SUCCESS' }, 'poll');
+  let paid = db.prepare('SELECT * FROM orders WHERE id=?').get(order.id);
+  await applyPaymentResult(env, paid, { status: 'paid', providerStatus: 'SUCCESS' }, 'poll');
+  assert.equal(notices.length, 1); assert.equal(paid.last_check_error, null);
+  env.DB.batch = async () => { throw new Error('transaction failed'); };
+  await assert.rejects(applyPaymentResult(env, paid, { status: 'failed', providerStatus: 'REFUNDED' }, 'scheduled'), /transaction failed/);
+  assert.equal(notices.length, 1); assert.equal(db.prepare('SELECT status FROM orders WHERE id=?').get(order.id).status, 'paid');
+});
+
+test('saved agent test status restores only real self-hosted orders, without credentials or writes', async () => {
+  const { env, create, db, request } = setup();
+  assert.equal(await readAgentTestOrder(env), null);
+  const first = await (await create()).json(); const second = await (await create()).json(); const legacy = await (await create()).json();
+  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent',created_at=1 WHERE id=?").run(first.id);
+  db.prepare("UPDATE orders SET is_demo=0,provider_transport='agent',created_at=2,status='paid',payment_state='paid' WHERE id=?").run(second.id);
+  db.prepare('UPDATE orders SET is_demo=0,created_at=3 WHERE id=?').run(legacy.id);
+  const latest = await readAgentTestOrder(env);
+  assert.equal(latest.id, second.id); assert.equal(latest.status, 'paid'); assert.equal(latest.qrCode, null);
+  for (const field of ['accessToken', 'token_hash', 'provider_order_id', 'nickname', 'message', 'sealed_credentials']) assert.equal(field in latest, false);
+  assert.equal((await readAgentTestOrder(env, first.id)).id, first.id);
+  await assert.rejects(readAgentTestOrder(env, legacy.id), { code: 'NOT_FOUND' });
+  await assert.rejects(readAgentTestOrder(env, 'bad-id'), { code: 'INVALID_ORDER_ID' });
+  const local = await request('/api/admin/account/agent-payment/status');
+  assert.equal(local.headers.get('Cache-Control'), 'no-store'); assert.deepEqual(await local.json(), { order: null });
+  Object.assign(env, { LOCAL_DEMO: 'false', ACCESS_TEAM_DOMAIN: 'https://test.cloudflareaccess.com', ACCESS_AUD: 'test-audience', ADMIN_EMAILS: 'owner@example.invalid' });
+  assert.equal((await request('/api/admin/account/agent-payment/status')).status, 403);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM orders').get().n, 3);
 });
 test('local QR timeout remains pending upstream and can later reconcile success', async () => {
   const { env, create, db } = setup(); const order = await (await create()).json();

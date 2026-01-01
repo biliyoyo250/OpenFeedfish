@@ -44,6 +44,13 @@ export class BrowserAgentRelay {
       const agent = this.live('agent')[0]?.deserializeAttachment();
       return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, paymentProtocol: agent?.paymentProtocol === 1 ? 1 : 0, name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0 });
     }
+    // Private service-binding route; public/device/viewer routes cannot invoke it.
+    if (path === '/notify-order' && request.method === 'POST') {
+      const body = await request.json();
+      if (!validCommandId(body.id)) return reply({ error: 'INVALID_ORDER_ID' }, 400);
+      for (const ws of this.live('viewer')) send(ws, { type: 'order-updated', id: body.id });
+      return reply({ ok: true });
+    }
     if (path === '/execute' && request.method === 'POST') {
       let job; try { job = paymentJob(await request.json(), this.env.DEEPSEEK_ACCOUNT_ID); } catch { return reply({ ok: false, code: 'AGENT_PROTOCOL', creationAttempted: false }); }
       const agent = this.live('agent')[0];

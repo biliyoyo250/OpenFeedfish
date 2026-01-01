@@ -440,6 +440,7 @@ refreshButton.addEventListener('click', async () => {
 });
 
 window.addEventListener('pagehide', () => { form.reset(); });
+window.addEventListener('feedfish:agent-order-updated', () => { void loadOrders(); });
 initBrowserAgent();
 updateControls();
 refresh().then(async () => {

@@ -3,6 +3,7 @@ import { initFish } from './fish.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
+const weChatMethod = form.querySelector('input[name="paymentMethod"][value="wechat"]');
 const storageKey = 'feedfish-order-v1';
 const inWeChat = /\bMicroMessenger\b/i.test(navigator.userAgent);
 const checkDelays = [0, 0, 3000, 3000, 5000, 5000, 7000, 7000];
@@ -20,6 +21,7 @@ let checkingPayment = false, manualChecks = 0, nextCheckAt = 0, checkTimer, chec
 let reminderPulse;
 let submitting = false;
 const nicknameDialog = $('nickname-dialog');
+const weChatChannelDialog = $('wechat-channel-dialog');
 initFish();
 const storage = { get() { try { return JSON.parse(sessionStorage.getItem(storageKey)); } catch { return null; } }, set(value) { try { value ? sessionStorage.setItem(storageKey, JSON.stringify(value)) : sessionStorage.removeItem(storageKey); } catch {} } };
 function message(id, text = '') { $(id).textContent = text; $(id).hidden = !text; }
@@ -40,7 +42,7 @@ function schedulePoll() {
 }
 
 function weChatPaymentUrl() {
-  if (!inWeChat || config.demo || order.status !== 'pending' || !(Date.parse(order.expiresAt) > Date.now())) return null;
+  if (!inWeChat || config.demo || order?.status !== 'pending' || !(Date.parse(order.expiresAt) > Date.now())) return null;
   try {
     const url = new URL(order.qrCode);
     return url.origin === 'https://qr.95516.com' && !url.username && !url.password ? url.href : null;
@@ -64,6 +66,14 @@ function countDownToPayment(seconds) {
   if (!seconds) { openPaymentPage(); return; }
   $('start-again').textContent = `跳转支付……${seconds}`;
   handoffTimer = setTimeout(() => countDownToPayment(seconds - 1), 1000);
+}
+
+async function startWeChatPayment(url) {
+  if (handoff) return;
+  stopPolling();
+  handoff = { url, navigating: false };
+  await renderOrder();
+  countDownToPayment(3);
 }
 
 async function resumePayment() {
@@ -141,18 +151,24 @@ function resetManualCheck() {
 }
 
 function tick() {
-  if (!order || order.status !== 'pending') return;
+  if (order?.status !== 'pending' || handoff) return;
   const seconds = Math.max(0, Math.ceil((Date.parse(order.expiresAt) - Date.now()) / 1000));
   $('countdown').textContent = seconds ? `付款码有效期 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '付款码已过期，正在确认最终状态…';
-  if (!seconds) { $('qr-overlay').hidden = false; $('result-icon').textContent = '↻'; $('payment-link').hidden = true; $('order-status').textContent = '二维码已过期'; }
+  if (!seconds) {
+    $('qr-overlay').hidden = false;
+    $('result-icon').textContent = '↻';
+    $('payment-link').hidden = true;
+    $('switch-wechat').hidden = true;
+    $('order-status').textContent = '二维码已过期';
+  }
 }
 async function renderOrder(verified = true) {
   form.hidden = true; $('hero').hidden = true; $('payment-view').hidden = false;
-  $('order-method').textContent = order.paymentMethod === 'wechat' ? '微信支付' : '支付宝';
   $('order-amount').textContent = `¥${order.amount}`;
   const pending = order.status === 'pending';
   const success = order.status === 'paid' && verified;
   const redirecting = pending && !!handoff;
+  $('order-method').textContent = redirecting || order.paymentMethod === 'wechat' ? '微信支付' : '支付宝';
   const showActions = pending && !redirecting;
   const animation = $('success-animation');
   animation.hidden = (!success && !redirecting) || matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -169,11 +185,14 @@ async function renderOrder(verified = true) {
   $('demo-pay').hidden = !config.demo || !pending;
   const paymentLink = $('payment-link');
   const weChatUrl = showActions ? weChatPaymentUrl() : null;
-  const directUrl = weChatUrl || (order.paymentUrl?.startsWith('https://') ? order.paymentUrl : null);
+  const weChatLink = order.paymentMethod === 'wechat' ? weChatUrl : null;
+  const alipayLink = !inWeChat && order.paymentUrl?.startsWith('https://') ? order.paymentUrl : null;
+  const directUrl = weChatLink || alipayLink;
+  $('switch-wechat').hidden = !weChatUrl || order.paymentMethod !== 'alipay' || weChatMethod.disabled;
   paymentLink.hidden = !showActions || !directUrl;
   paymentLink.href = paymentLink.hidden ? '#' : directUrl;
-  paymentLink.target = weChatUrl ? '_self' : '_blank';
-  paymentLink.textContent = weChatUrl ? '打开付款页' : '打开支付宝付款页';
+  paymentLink.target = weChatLink ? '_self' : '_blank';
+  paymentLink.textContent = weChatLink ? '打开付款页' : '打开支付宝付款页';
   $('qr-overlay').hidden = pending;
   $('start-again').disabled = false;
   $('start-again').textContent = redirecting ? '跳转支付……3' : pending ? '返回修改' : '再投喂一次';
@@ -193,6 +212,8 @@ async function renderOrder(verified = true) {
     tick(); clearInterval(countdown); countdown = setInterval(tick, 1000);
   } else {
     stopPolling();
+    clearTimeout(handoffTimer);
+    handoff = null;
     $('result-icon').textContent = order.status === 'paid' ? '✓' : '↻';
     $('payment-title').textContent = order.status === 'paid' ? (verified ? '投喂成功' : '正在核对') : ['refunded', 'chargeback'].includes(order.paymentState) ? '付款状态已更新' : order.status === 'expired' ? '二维码已过期' : '支付未完成';
     $('payment-instruction').textContent = order.status === 'paid' ? (verified ? (config.demo ? '演示完成，未发生真实付款。' : '谢谢投喂。') : '正在确认订单状态…') : '若已扣款，请先联系收款人核对。';
@@ -205,7 +226,7 @@ async function applyOrderUpdate(update, force = false) {
   storage.set(order);
   backoff = 4000;
   message('poll-error');
-  if (force || changed) await renderOrder(true);
+  if ((force || changed) && (!handoff || order.status !== 'pending')) await renderOrder(true);
 }
 
 async function poll(force = false) {
@@ -241,9 +262,9 @@ async function checkPayment() {
     const update = await api(`/api/orders/${encodeURIComponent(id)}/check`, { method: 'POST', headers: authenticated(), timeout: 140000 });
     if (order?.id !== id) return;
     await applyOrderUpdate(update);
-    message('manual-check-status', order.status === 'pending' ? '已核对，账单尚未确认这笔付款。' : '');
+    if (!handoff) message('manual-check-status', order.status === 'pending' ? '已核对，账单尚未确认这笔付款。' : '');
   } catch (error) {
-    if (order?.id === id) message('manual-check-status', error.message);
+    if (order?.id === id && !handoff) message('manual-check-status', error.message);
   } finally {
     if (order?.id === id) {
       checkingPayment = false;
@@ -259,11 +280,11 @@ $('nickname-edit').addEventListener('click', () => {
   form.querySelector('.optional-fields').open = true;
   $('nickname').focus();
 });
-function confirmAnonymous() {
-  nicknameDialog.returnValue = '';
+function chooseDialog(dialog) {
+  dialog.returnValue = '';
   return new Promise((resolve) => {
-    nicknameDialog.addEventListener('close', () => resolve(nicknameDialog.returnValue === 'continue'), { once: true });
-    nicknameDialog.showModal();
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true });
+    dialog.showModal();
   });
 }
 form.addEventListener('submit', async (event) => {
@@ -274,9 +295,16 @@ form.addEventListener('submit', async (event) => {
     if (!config?.paymentsAvailable) { message('form-error', '收款暂时不可用，请稍后重试。'); return; }
     const amount = $('amount').value.trim();
     if (!/^(?:0|[1-9]\d{0,5})(?:\.0{1,2})?$/.test(amount) || Number(amount) < Number(config.minAmount) || Number(amount) > Number(config.maxAmount)) { message('form-error', `请输入 ${config.minAmount}–${config.maxAmount} CNY，仅支持整数元。`); $('amount').focus(); return; }
-    if (!$('nickname').value.trim() && !await confirmAnonymous()) return;
+    if (!$('nickname').value.trim() && await chooseDialog(nicknameDialog) !== 'continue') return;
+    let paymentMethod = new FormData(form).get('paymentMethod');
+    if (inWeChat && !config.demo && paymentMethod === 'alipay' && !weChatMethod.disabled) {
+      const choice = await chooseDialog(weChatChannelDialog);
+      if (!['wechat', 'alipay'].includes(choice)) return;
+      paymentMethod = choice;
+      if (choice === 'wechat') weChatMethod.checked = true;
+    }
     if (config.turnstileSiteKey && !token) { message('form-error', '请先完成人机验证。'); return; }
-    const body = { amount, nickname: $('nickname').value.trim(), message: $('message').value.trim(), paymentMethod: new FormData(form).get('paymentMethod') };
+    const body = { amount, nickname: $('nickname').value.trim(), message: $('message').value.trim(), paymentMethod };
     const fingerprint = JSON.stringify(body);
     if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
     busy(true);
@@ -284,16 +312,21 @@ form.addEventListener('submit', async (event) => {
       order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 });
       storage.set(order);
       resetManualCheck();
-      const url = weChatPaymentUrl();
-      if (url) handoff = { url, navigating: false };
-      await renderOrder();
-      if (handoff) countDownToPayment(3);
-      else schedulePoll();
+      const url = order.paymentMethod === 'wechat' ? weChatPaymentUrl() : null;
+      if (url) await startWeChatPayment(url);
+      else {
+        await renderOrder();
+        schedulePoll();
+      }
     } catch (error) { message('form-error', error.name === 'TimeoutError' ? '请求暂未返回。请点击重试，同一笔请求不会重复创建订单。' : error.message); }
     finally { busy(false); resetCaptcha(); }
   } finally { submitting = false; }
 });
 $('check-payment').addEventListener('click', checkPayment);
+$('switch-wechat').addEventListener('click', () => {
+  const url = weChatPaymentUrl();
+  if (url && order.paymentMethod === 'alipay' && !weChatMethod.disabled) void startWeChatPayment(url);
+});
 $('start-again').addEventListener('click', () => {
   if (handoff) { openPaymentPage(); return; }
   if (order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
@@ -310,7 +343,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(timer); clearTimeout(handoffTimer); }
   else void resumePayment();
 });
-window.addEventListener('pagehide', () => { stopPolling(); clearTimeout(handoffTimer); if (nicknameDialog.open) nicknameDialog.close(); });
+window.addEventListener('pagehide', () => {
+  stopPolling();
+  clearTimeout(handoffTimer);
+  if (nicknameDialog.open) nicknameDialog.close();
+  if (weChatChannelDialog.open) weChatChannelDialog.close();
+});
 window.addEventListener('pageshow', (event) => { if (event.persisted) void resumePayment(); });
 async function loadCaptcha() {
   if (!config.turnstileSiteKey || !config.paymentsAvailable) return;

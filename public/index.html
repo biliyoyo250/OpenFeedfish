@@ -72,6 +72,7 @@
       <p id="poll-error" class="error" role="status" hidden></p>
       <div class="payment-actions">
         <a id="payment-link" class="secondary-button" target="_blank" rel="noopener noreferrer" hidden>打开支付宝付款页</a>
+        <button id="switch-wechat" type="button" class="secondary-button" hidden>改用微信支付</button>
         <p id="return-merchant" class="return-merchant" hidden>支付成功后请点击"返回商家"，否则回调可能延迟</p>
         <button id="check-payment" type="button" class="secondary-button">查看付款结果</button>
         <p id="manual-check-status" class="manual-check-status" role="status" hidden></p>
@@ -87,6 +88,14 @@
       <button id="nickname-skip" class="text-button" type="button">不必了</button>
       <button id="nickname-edit" class="primary-button" type="button" autofocus>回去改</button>
     </div>
+  </dialog>
+  <dialog id="wechat-channel-dialog" class="nickname-dialog" aria-labelledby="wechat-channel-title">
+    <img src="/assets/DSniang1.png" width="104" height="104" alt="" draggable="false">
+    <h2 id="wechat-channel-title">这里是微信吧……</h2>
+    <form method="dialog" class="nickname-dialog-actions">
+      <button type="submit" class="primary-button" value="wechat">用微信</button>
+      <button type="submit" class="primary-button" value="alipay" autofocus>用支付宝</button>
+    </form>
   </dialog>
   <noscript><p class="noscript">请启用 JavaScript 后继续。</p></noscript>
 </body>

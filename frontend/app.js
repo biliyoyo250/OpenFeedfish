@@ -27,6 +27,7 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const weChatChannelDialog = $('wechat-channel-dialog');
 const qrImage = $('qr-image');
 const qrDownload = $('qr-download');
+const expiredQrBackdrop = $('expired-qr-backdrop');
 const unavailableImage = $('payment-unavailable-image');
 const unavailableAnimation = '/assets/payment-peek.webp?v=2';
 const unavailablePoster = '/assets/payment-peek.png';
@@ -184,13 +185,15 @@ function renderQrOverlay(pending, unavailable) {
   $('qr-overlay').hidden = pending && !unavailable;
   $('result-icon').hidden = unavailable;
   $('payment-unavailable').hidden = !unavailable;
+  const timedOut = unavailable && Date.parse(order.expiresAt) <= Date.now();
+  const expired = unavailable && (timedOut || order.status === 'expired' || order.paymentState === 'expired');
+  expiredQrBackdrop.hidden = !expired || expiredQrBackdrop.dataset.orderId !== order.id;
   if (!unavailable) {
     unavailableImage.removeAttribute('src');
     message('payment-unavailable-caption');
     return;
   }
-  const expired = Date.parse(order.expiresAt) <= Date.now();
-  const caption = expired && (!config.demo || debugCheckout) ? '你浪费了15分钟盯着我看' : '';
+  const caption = timedOut && (!config.demo || debugCheckout) ? '你浪费了15分钟盯着我看' : '';
   if ($('payment-unavailable-caption').textContent !== caption) message('payment-unavailable-caption', caption);
   if (!unavailableImage.hasAttribute('src')) unavailableImage.src = reducedMotion.matches ? unavailablePoster : unavailableAnimation;
 }
@@ -273,8 +276,16 @@ async function renderOrder(verified = true) {
     if (qrCode && qrAvailable) {
       const stillScannable = () => order?.id === id && order.status === 'pending' && order.paymentState !== 'expired' && order.qrCode === qrCode && !handoff && Date.parse(order.expiresAt) > Date.now();
       try {
-        const src = await QRCode.toDataURL(qrCode, { width: 420, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#19352f', light: '#ffffff' } });
-        if (stillScannable()) setQrImage(src);
+        const canvas = await QRCode.toCanvas(qrCode, { width: 420, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#19352f', light: '#ffffff' } });
+        if (stillScannable()) {
+          setQrImage(canvas.toDataURL());
+          const backdrop = expiredQrBackdrop.getContext('2d');
+          if (backdrop) {
+            backdrop.imageSmoothingQuality = 'high';
+            backdrop.drawImage(canvas, 0, 0, expiredQrBackdrop.width, expiredQrBackdrop.height);
+            expiredQrBackdrop.dataset.orderId = id;
+          }
+        }
       } catch {
         if (stillScannable()) message('poll-error', '二维码未能显示。请刷新恢复此订单，避免重复下单。');
       }

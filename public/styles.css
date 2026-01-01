@@ -118,10 +118,12 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 .qr-frame { position: relative; display: grid; place-items: center; width: 234px; height: 234px; max-width: 100%; margin: 0 auto; overflow: hidden; border: 1px solid var(--outline-variant); border-radius: 18px; background: #fff; }
 #qr-image { display: block; max-width: 100%; width: 210px; height: auto; }
 #qr-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: var(--surface); color: var(--primary); }
+#expired-qr-backdrop { position: absolute; inset: 12px; width: calc(100% - 24px); height: calc(100% - 24px); filter: contrast(1.5) blur(4px); opacity: .38; pointer-events: none; }
 #result-icon { font-size: 48px; font-weight: 400; }
-.payment-unavailable { display: grid; justify-items: center; width: 100%; padding: 12px; gap: 8px; color: var(--on-surface); }
+.payment-unavailable { position: relative; display: grid; justify-items: center; width: 100%; padding: 12px; gap: 8px; color: var(--on-surface); }
 .payment-unavailable img { display: block; width: min(100%, 192px); height: auto; }
 .payment-unavailable p { margin: 0; font-size: 14px; line-height: 1.5; font-weight: 700; }
+#expired-qr-backdrop:not([hidden]) ~ .payment-unavailable p { padding: 2px 8px; border-radius: 8px; background: var(--surface); }
 .success-animation { display: block; width: 160px; height: 160px; object-fit: contain; margin: 20px auto; }
 .payment-instruction { font-size: 13px; line-height: 1.8; color: var(--on-surface-variant); margin: 20px 0 4px; overflow-wrap: anywhere; }
 .qr-download { margin-inline-start: .5em; color: var(--primary); text-underline-offset: .18em; }

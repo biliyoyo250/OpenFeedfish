@@ -571,6 +571,44 @@ test('an uncertain admin payment test is recorded and never silently recreated',
   assert.doesNotMatch(JSON.stringify(row), /private-block-page|private-test-token/);
 });
 
+test('an admin test rejected before sending reuses its original row and upstream request ID', async () => {
+  const { env, db } = setup(); env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.DEEPSEEK_SESSION_TOKEN = 'private-test-token'; env.ORDER_TOKEN_SECRET = 's'.repeat(40);
+  const identity = { sub: 'owner' }, body = { requestId: crypto.randomUUID(), paymentMethod: 'wechat' };
+  await assert.rejects(createAdminTestPayment(env, identity, body, async () => Response.json({ code: 40003 })), { code: 'SESSION_EXPIRED' });
+  const failed = db.prepare('SELECT * FROM orders').get(); assert.equal(failed.status, 'failed');
+  let creations = 0;
+  const fetcher = async (url, options) => {
+    if (url.endsWith('/current')) return success({ id: 'fixed', currency: 'CNY' });
+    creations++; assert.equal(JSON.parse(options.body).order_info.request_id, failed.id);
+    return success({ payment_order_id: 'retried-order', amount: '1', currency: 'CNY', url: 'weixin://test' });
+  };
+  const retried = await createAdminTestPayment(env, identity, body, fetcher);
+  assert.equal(retried.id, failed.id); assert.equal(retried.status, 'pending'); assert.equal(creations, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 1);
+  assert.equal(db.prepare('SELECT created_at FROM orders').get().created_at, failed.created_at);
+  await createAdminTestPayment(env, identity, body, fetcher); assert.equal(creations, 1);
+  db.prepare("UPDATE orders SET status='failed',payment_state='failed'").run();
+  await assert.rejects(createAdminTestPayment(env, identity, body, fetcher), { code: 'PAYMENT_TEST_FAILED' });
+  assert.equal(creations, 1);
+});
+
+test('concurrent retries of an unsent admin test admit one creation', async () => {
+  const { env, db } = setup(); env.DEEPSEEK_ACCOUNT_ID = 'fixed'; env.DEEPSEEK_SESSION_TOKEN = 'private-test-token'; env.ORDER_TOKEN_SECRET = 's'.repeat(40);
+  const identity = { sub: 'owner' }, body = { requestId: crypto.randomUUID(), paymentMethod: 'wechat' };
+  await assert.rejects(createAdminTestPayment(env, identity, body, async () => Response.json({ code: 40003 })));
+  let release, started, creations = 0;
+  const gate = new Promise(resolve => { release = resolve; }); const posting = new Promise(resolve => { started = resolve; });
+  const fetcher = async (url) => {
+    if (url.endsWith('/current')) return success({ id: 'fixed', currency: 'CNY' });
+    creations++; started(); await gate;
+    return success({ payment_order_id: 'one-retried-order', amount: '1', currency: 'CNY', url: 'weixin://test' });
+  };
+  const first = createAdminTestPayment(env, identity, body, fetcher); await posting;
+  await assert.rejects(createAdminTestPayment(env, identity, body, fetcher), { code: 'ORDER_UNCERTAIN' });
+  release(); await first;
+  assert.equal(creations, 1); assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 1);
+});
+
 test('admin payment tests require the pinned account, a strong order key and a known method', async () => {
   const { env, db } = setup(); const identity = { sub: 'owner' }, requestId = crypto.randomUUID();
   await assert.rejects(createAdminTestPayment(env, identity, { requestId, paymentMethod: 'wechat' }), { code: 'ACCOUNT_NOT_CONFIGURED' });

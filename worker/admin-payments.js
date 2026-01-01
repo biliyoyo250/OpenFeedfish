@@ -8,19 +8,28 @@ export async function createAdminTestPayment(env, identity, body, fetcher = fetc
   const input = validateOrder({ amount: '1', paymentMethod: body.paymentMethod, nickname: '通道测试', message: '管理员验证支付通道' });
   const key = await hash(`admin-test:${identity.sub}:${body.requestId}`);
   const fingerprint = await hash(input.paymentMethod);
-  const existing = async () => {
+  const existing = async (allowUnsentRetry = false) => {
     const row = await env.DB.prepare('SELECT * FROM orders WHERE idempotency_hash=?').bind(key).first();
     if (!row) return null;
     if (row.request_hash !== fingerprint) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', '此测试请求的支付方式已改变。');
     if (row.status === 'creating' || row.status === 'unknown') throw new ApiError(409, 'ORDER_UNCERTAIN', '这笔测试账单尚未确认，请先核对已有账单。');
-    if (row.status === 'failed') throw new ApiError(503, 'PAYMENT_TEST_FAILED', '这笔测试账单未能创建，请核对后台记录。');
+    if (row.status === 'failed') {
+      // This helper sets failed only when creationAttempted=false. Terminal
+      // upstream payments have a provider ID/status and cannot be reclaimed.
+      if (!allowUnsentRetry || row.is_demo !== 0 || row.provider_order_id || row.provider_status || row.qr_code) throw new ApiError(503, 'PAYMENT_TEST_FAILED', '这笔测试账单不能重新创建，请核对后台记录。');
+      const claim = await env.DB.prepare("UPDATE orders SET status='creating',payment_state='creating',last_check_error=NULL,expires_at=? WHERE id=? AND status='failed' AND is_demo=0 AND provider_order_id IS NULL AND provider_status IS NULL AND qr_code IS NULL").bind(Date.now() + 900000, row.id).run();
+      if (!claim.meta.changes) throw new ApiError(409, 'ORDER_UNCERTAIN', '这笔测试账单正在处理，请先核对已有账单。');
+      return { retryId: row.id };
+    }
     return publicOrder(row);
   };
-  const previous = await existing(); if (previous) return previous;
-  const now = Date.now(), id = crypto.randomUUID();
-  const tokenHash = await hash(await accessToken(id, env.ORDER_TOKEN_SECRET));
-  const inserted = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, key, fingerprint, tokenHash, 100, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', 0, now, now + 900000).run();
-  if (!inserted.meta.changes) return existing();
+  const previous = await existing(true); if (previous && !previous.retryId) return previous;
+  const now = Date.now(), id = previous?.retryId || crypto.randomUUID();
+  if (!previous) {
+    const tokenHash = await hash(await accessToken(id, env.ORDER_TOKEN_SECRET));
+    const inserted = await env.DB.prepare('INSERT OR IGNORE INTO orders (id,idempotency_hash,request_hash,token_hash,amount_fen,payment_method,nickname,message,status,payment_state,is_demo,created_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(id, key, fingerprint, tokenHash, 100, input.paymentMethod, input.nickname, input.message, 'creating', 'creating', 0, now, now + 900000).run();
+    if (!inserted.meta.changes) return existing();
+  }
   try {
     const payment = await createPayment(env, { ...input, requestId: id }, fetcher);
     await env.DB.prepare('UPDATE orders SET status=?,payment_state=?,provider_order_id=?,qr_code=?,payment_url=?,expires_at=? WHERE id=? AND status=?').bind('pending', 'waiting', payment.providerOrderId, payment.qrCode, payment.paymentUrl || null, payment.expiresAt, id, 'creating').run();

@@ -193,17 +193,27 @@ test('SDK initialization loads only the official fixed script and fails closed o
   const runtime = { location: { origin: 'https://platform.deepseek.com' }, window: {}, setTimeout, clearTimeout };
   runtime.document = {
     querySelector: () => null,
-    createElement: (tag) => { assert.equal(tag, 'script'); return { dataset: {} }; },
+    createElement: (tag) => { assert.equal(tag, 'script'); const handlers = {}; return { dataset: {}, addEventListener: (name, fn) => { handlers[name] = fn; }, handlers }; },
     head: { appendChild: (script) => {
       assert.equal(script.src, '/static/fp.min.js'); assert.equal(script.dataset.fp, 'true');
       runtime.window.SMSdk = { ready: (callback) => callback(), getDeviceId: () => 'actual-sdk-value' };
-      script.onload();
+      script.handlers.load();
     } },
   };
   const page = { evaluate: (fn) => runInNewContext(`(${fn.toString()})()`, runtime) };
   assert.equal(await paymentDeviceId(page), 'actual-sdk-value');
   runtime.location.origin = 'https://other.example';
   await assert.rejects(paymentDeviceId(page), { code: 'PAYMENT_DEVICE_UNAVAILABLE' });
+});
+
+test('a device script already in flight is awaited without replacing or loading it twice', async () => {
+  const runtime = { location: { origin: 'https://platform.deepseek.com' }, window: {}, setTimeout, clearTimeout };
+  const script = { addEventListener: (name, fn) => {
+    if (name === 'load') queueMicrotask(() => { runtime.window.SMSdk = { ready: (callback) => callback(), getDeviceId: () => 'existing-script-device' }; fn(); });
+  } };
+  runtime.document = { querySelector: () => script, createElement: () => assert.fail('must reuse the existing script'), head: { appendChild: () => assert.fail('must not load twice') } };
+  const page = { evaluate: (fn) => runInNewContext(`(${fn.toString()})()`, runtime) };
+  assert.equal(await paymentDeviceId(page), 'existing-script-device');
 });
 
 test('browser checks reject challenges, expired grants, wrong accounts and unavailable CNY permissions', async () => {

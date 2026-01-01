@@ -68,7 +68,7 @@ test('PKCE authorization keeps verifier and grant out of browser responses and p
   const expected = Buffer.from(await crypto.subtle.digest('SHA-256', Buffer.from(flow.verifier))).toString('base64url');
   assert.equal(calls[0].body.code_challenge, expected);
   assert.equal(calls[0].body.redirect_uri, 'http://127.0.0.1:16487/oauth/callback');
-  assert.equal(calls[0].options.redirect, 'error');
+  assert.equal(calls[0].options.redirect, 'manual');
   assert.doesNotMatch(JSON.stringify(started), new RegExp(flow.verifier));
   assert.equal(row.sealed_flow.includes(flow.verifier), false);
   const account = await completeAuthorization(env, owner, { state: input.state, code: 'one-time-code' }, (credentials) => importSession(env, credentials, 'owner@example.com', Date.now(), async (_url, options) => {

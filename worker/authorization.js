@@ -19,7 +19,7 @@ function authorizeUrl(value) {
 async function authRequest(method, body, fetcher) {
   let response, data;
   try {
-    response = await fetcher(`${origin}/auth-api/v0/dsh/${method}`, { method: 'POST', headers: { ...platformClientHeaders, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(12000) });
+    response = await fetcher(`${origin}/auth-api/v0/dsh/${method}`, { method: 'POST', headers: { ...platformClientHeaders, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(12000) });
   } catch { throw new ApiError(503, 'AUTH_NETWORK', 'Cloudflare 暂未连通 DeepSeek 授权接口。'); }
   if (!response.headers.get('content-type')?.includes('application/json')) {
     const challenge = response.headers.get('x-amzn-waf-action');
@@ -112,4 +112,15 @@ export async function cleanupAuthorization(env, fetcher = fetch, now = Date.now(
   if (!row || row.state === 'closed' || row.expires_at > now) return;
   const claim = await env.DB.prepare("UPDATE account_authorization SET state='closed',sealed_flow=NULL WHERE singleton=1 AND id=? AND expires_at<=?").bind(row.id, now).run();
   if (claim.meta.changes && row.sealed_flow) await cancelFlow(await unseal(row.sealed_flow, env.ACCOUNT_ENCRYPTION_KEY), fetcher);
+}
+// A fixed anonymous request: no account data, caller headers, cookies, code or
+// verifier can enter this diagnostic or its exception message.
+export async function authorizationConnectivity(fetcher = fetch) {
+  try {
+    const response = await fetcher(`${origin}/auth-api/v0/users/current`, { headers: { Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(12000) });
+    const isJson = response.headers.get('content-type')?.includes('application/json') || false;
+    let code = null;
+    if (isJson) { const value = await response.json(); if (Number.isInteger(value.code)) code = value.code; }
+    return { reachable: true, httpStatus: response.status, isJson, code };
+  } catch (error) { return { reachable: false, errorType: String(error.name).slice(0,50), message: String(error.message).slice(0,240) }; }
 }

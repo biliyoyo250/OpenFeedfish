@@ -107,6 +107,13 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 .payment-instruction { font-size: 13px; line-height: 1.8; color: var(--on-surface-variant); margin: 20px 0 4px; overflow-wrap: anywhere; }
 .timer { font-size: 11px; line-height: 20px; min-height: 20px; color: var(--on-surface-variant); margin: 6px 0 22px; font-variant-numeric: tabular-nums; }
 .payment-actions { display: grid; gap: 12px; }
+.return-merchant, .manual-check-status { margin: 0; padding: 6px 8px; color: var(--on-surface-variant); font-size: 12px; line-height: 1.6; }
+.return-merchant.is-highlighted { border-radius: 12px; background: var(--primary-container); color: var(--on-primary-container); font-weight: 700; }
+.payment-check-fish { position: fixed; z-index: 2; right: max(10px, env(safe-area-inset-right, 0px)); bottom: max(10px, env(safe-area-inset-bottom, 0px)); display: grid; justify-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--on-surface); }
+.payment-check-fish img { display: block; width: clamp(76px, 23vw, 116px); height: auto; }
+.payment-check-fish strong { padding: 4px 10px; border-radius: 14px; background: var(--surface-container); font-size: 13px; }
+.payment-check-fish.is-retreating { pointer-events: none; animation: fish-retreat .24s ease-in forwards; }
+@keyframes fish-retreat { to { transform: translateX(calc(100% + 64px)) scale(.75); } }
 .secondary-button { background: var(--primary-container); color: var(--on-primary-container); }
 .secondary-button:hover:not(:disabled) { box-shadow: inset 0 0 0 40px #505b9210; }
 .text-button { width: 100%; min-height: 44px; border: 0; padding: 10px 18px; border-radius: 24px; color: var(--primary); background: transparent; font-size: 13px; line-height: 24px; }

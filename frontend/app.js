@@ -4,9 +4,12 @@ import { initFish } from './fish.js';
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
 const storageKey = 'feedfish-order-v1';
+const inWeChat = /\bMicroMessenger\b/i.test(navigator.userAgent);
+const checkDelays = [0, 0, 3000, 3000, 5000, 5000, 7000, 7000];
 let config, order, timer, countdown, turnstileId, token = '', requestKey, requestFingerprint, polling = false;
 let backoff = 4000;
-let celebratedOrder;
+let animationKey, handoff, handoffTimer;
+let checkingPayment = false, manualChecks = 0, nextCheckAt = 0, checkTimer, checkFish;
 let submitting = false;
 const nicknameDialog = $('nickname-dialog');
 initFish();
@@ -23,6 +26,96 @@ async function api(path, options = {}) {
 function resetCaptcha() { token = ''; if (turnstileId !== undefined && window.turnstile) window.turnstile.reset(turnstileId); }
 function stopPolling() { clearTimeout(timer); clearInterval(countdown); }
 function authenticated() { return { Authorization: `Bearer ${order.accessToken}` }; }
+function schedulePoll() {
+  clearTimeout(timer);
+  if (order?.status === 'pending' && !checkingPayment && !handoff && !document.hidden) timer = setTimeout(poll, backoff);
+}
+
+function weChatPaymentUrl() {
+  if (!inWeChat || config.demo || order.status !== 'pending' || !(Date.parse(order.expiresAt) > Date.now())) return null;
+  try {
+    const url = new URL(order.qrCode);
+    return url.origin === 'https://qr.95516.com' && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
+
+function openPaymentPage() {
+  if (!handoff || handoff.navigating) return;
+  clearTimeout(handoffTimer);
+  if (!weChatPaymentUrl()) { void resumePayment(); return; }
+  handoff.navigating = true;
+  $('start-again').textContent = '跳转支付ing';
+  $('start-again').disabled = true;
+  // If the WebView stays here, restore the order and its payment link.
+  handoffTimer = setTimeout(resumePayment, 3000);
+  try { location.assign(handoff.url); } catch { void resumePayment(); }
+}
+
+function countDownToPayment(seconds) {
+  if (!handoff || document.hidden) return;
+  if (!seconds) { openPaymentPage(); return; }
+  $('start-again').textContent = `跳转支付……${seconds}`;
+  handoffTimer = setTimeout(() => countDownToPayment(seconds - 1), 1000);
+}
+
+async function resumePayment() {
+  if (order?.status !== 'pending') return;
+  if (handoff) {
+    clearTimeout(handoffTimer);
+    handoff = null;
+    await renderOrder();
+  } else {
+    clearInterval(countdown);
+    countdown = setInterval(tick, 1000);
+  }
+  await poll();
+}
+
+function updateCheckButton() {
+  clearTimeout(checkTimer);
+  const remaining = nextCheckAt - Date.now();
+  $('check-payment').disabled = checkingPayment || remaining > 0;
+  if (!checkingPayment && remaining > 0) checkTimer = setTimeout(updateCheckButton, remaining);
+}
+
+function removeCheckFish() {
+  checkFish?.remove();
+  checkFish = null;
+  $('return-merchant').classList.remove('is-highlighted');
+}
+
+function showCheckFish() {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'payment-check-fish';
+  button.setAttribute('aria-label', '人，别戳了。点击关闭小鱼提示');
+  const image = new Image();
+  image.src = '/assets/DSniang02.png';
+  image.alt = '';
+  const caption = document.createElement('strong');
+  caption.textContent = '人，别戳了';
+  button.append(image, caption);
+  button.addEventListener('click', () => {
+    $('return-merchant').classList.remove('is-highlighted');
+    button.classList.add('is-retreating');
+    const remove = () => { if (checkFish === button) removeCheckFish(); };
+    button.addEventListener('animationend', remove, { once: true });
+    setTimeout(remove, 300);
+  }, { once: true });
+  checkFish = button;
+  document.body.append(button);
+  $('return-merchant').classList.add('is-highlighted');
+}
+
+function resetManualCheck() {
+  manualChecks = 0;
+  nextCheckAt = 0;
+  checkingPayment = false;
+  updateCheckButton();
+  removeCheckFish();
+  message('manual-check-status');
+}
+
 function tick() {
   if (!order || order.status !== 'pending') return;
   const seconds = Math.max(0, Math.ceil((Date.parse(order.expiresAt) - Date.now()) / 1000));
@@ -35,22 +128,37 @@ async function renderOrder(verified = true) {
   $('order-amount').textContent = `¥${order.amount}`;
   const pending = order.status === 'pending';
   const success = order.status === 'paid' && verified;
+  const redirecting = pending && !!handoff;
+  const showActions = pending && !redirecting;
   const animation = $('success-animation');
-  animation.hidden = !success || matchMedia('(prefers-reduced-motion: reduce)').matches;
-  $('qr-frame').hidden = success && !animation.hidden;
-  if (success && !animation.hidden && celebratedOrder !== order.id) {
-    celebratedOrder = order.id;
+  animation.hidden = (!success && !redirecting) || matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $('qr-frame').hidden = redirecting || (success && !animation.hidden);
+  const nextAnimationKey = `${order.id}:${redirecting ? 'handoff' : 'success'}`;
+  if (!animation.hidden && animationKey !== nextAnimationKey) {
+    animationKey = nextAnimationKey;
     animation.src = '/assets/bubble-money1.gif';
   }
   $('order-status').textContent = ({ waiting: '等待付款', processing: '正在支付', paid: '支付成功', expired: '二维码已过期', failed: '支付失败', refunded: '已退款', chargeback: '已退单' })[order.paymentState] || ({ pending: '等待付款', paid: '支付成功', expired: '已过期', failed: '未能完成' })[order.status] || '正在确认';
-  $('check-payment').hidden = !pending;
+  $('check-payment').hidden = !showActions;
+  $('return-merchant').hidden = !showActions;
+  if (!showActions) { message('manual-check-status'); removeCheckFish(); }
   $('demo-pay').hidden = !config.demo || !pending;
   const paymentLink = $('payment-link');
-  paymentLink.hidden = !pending || !order.paymentUrl?.startsWith('https://');
-  paymentLink.href = paymentLink.hidden ? '#' : order.paymentUrl;
+  const weChatUrl = showActions ? weChatPaymentUrl() : null;
+  const directUrl = weChatUrl || (order.paymentUrl?.startsWith('https://') ? order.paymentUrl : null);
+  paymentLink.hidden = !showActions || !directUrl;
+  paymentLink.href = paymentLink.hidden ? '#' : directUrl;
+  paymentLink.target = weChatUrl ? '_self' : '_blank';
+  paymentLink.textContent = weChatUrl ? '打开付款页' : '打开支付宝付款页';
   $('qr-overlay').hidden = pending;
-  $('start-again').textContent = pending ? '返回修改' : '再投喂一次';
+  $('start-again').disabled = false;
+  $('start-again').textContent = redirecting ? '跳转支付……3' : pending ? '返回修改' : '再投喂一次';
   $('countdown').textContent = '';
+  if (redirecting) {
+    $('payment-title').textContent = '投喂中';
+    $('payment-instruction').textContent = '谢谢投喂。';
+    return;
+  }
   if (pending) {
     $('payment-title').textContent = '扫码付款';
     $('payment-instruction').textContent = config.demo ? '演示二维码，不会扣款。' : `使用${order.paymentMethod === 'wechat' ? '微信' : '支付宝'}扫码`;
@@ -66,24 +174,57 @@ async function renderOrder(verified = true) {
     $('payment-instruction').textContent = order.status === 'paid' ? (verified ? (config.demo ? '演示完成，未发生真实付款。' : '谢谢投喂。') : '正在确认订单状态…') : '若已扣款，请先联系收款人核对。';
   }
 }
+
+async function applyOrderUpdate(update, force = false) {
+  const changed = order.status !== update.status || order.paymentState !== update.paymentState;
+  order = { ...order, ...update };
+  storage.set(order);
+  backoff = 4000;
+  message('poll-error');
+  if (force || changed) await renderOrder(true);
+}
+
 async function poll(force = false) {
-  if (!order || (!force && order.status !== 'pending') || polling || document.hidden) return;
-  polling = true; $('check-payment').disabled = true;
-  const id = order.id;
+  if (!order || (!force && order.status !== 'pending') || polling || checkingPayment || handoff || document.hidden) return;
+  polling = true;
+  const previous = order;
   try {
-    const update = await api(`/api/orders/${encodeURIComponent(id)}`, { headers: authenticated() });
-    if (!order || order.id !== id) return;
-    const previousStatus = `${order.status}:${order.paymentState}`;
-    order = { ...order, ...update }; storage.set(order); backoff = 4000; message('poll-error');
-    if (force || previousStatus !== `${order.status}:${order.paymentState}`) await renderOrder(true);
+    const update = await api(`/api/orders/${encodeURIComponent(previous.id)}`, { headers: authenticated() });
+    if (order === previous && !checkingPayment) await applyOrderUpdate(update, force);
   } catch (error) {
-    if (order?.id !== id) return;
+    if (order !== previous || checkingPayment) return;
     message('poll-error', error.status === 429 ? '查询有点频繁，稍等片刻会自动重试。' : '暂时无法确认付款结果，正在重试。请勿重复付款。');
     backoff = Math.min(backoff * 2, 30000);
     if (error.status === 401 || error.status === 404) { backoff = 60000; message('poll-error', '无法读取这笔订单。若已付款，请联系收款人核对。'); }
   } finally {
-    polling = false; $('check-payment').disabled = false;
-    clearTimeout(timer); if (order?.status === 'pending' && !document.hidden) timer = setTimeout(poll, backoff);
+    polling = false;
+    schedulePoll();
+  }
+}
+
+async function checkPayment() {
+  if (order?.status !== 'pending' || handoff || checkingPayment || Date.now() < nextCheckAt) return;
+  const id = order.id;
+  checkingPayment = true;
+  manualChecks++;
+  nextCheckAt = Date.now() + (checkDelays[manualChecks - 1] ?? 10000);
+  clearTimeout(timer);
+  updateCheckButton();
+  if (manualChecks === 3) showCheckFish();
+  message('manual-check-status', config.demo ? '正在核对付款…' : '正在核对 DeepSeek 账单…');
+  try {
+    const update = await api(`/api/orders/${encodeURIComponent(id)}/check`, { method: 'POST', headers: authenticated(), timeout: 140000 });
+    if (order?.id !== id) return;
+    await applyOrderUpdate(update);
+    message('manual-check-status', order.status === 'pending' ? '已核对，账单尚未确认这笔付款。' : '');
+  } catch (error) {
+    if (order?.id === id) message('manual-check-status', error.message);
+  } finally {
+    if (order?.id === id) {
+      checkingPayment = false;
+      updateCheckButton();
+      schedulePoll();
+    }
   }
 }
 $('message').addEventListener('input', () => { $('message-count').textContent = `${$('message').value.length} / 300`; });
@@ -116,15 +257,22 @@ form.addEventListener('submit', async (event) => {
     busy(true);
     try {
       order = await api('/api/orders', { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 });
-      storage.set(order); await renderOrder(); timer = setTimeout(poll, 4000);
+      storage.set(order);
+      resetManualCheck();
+      const url = weChatPaymentUrl();
+      if (url) handoff = { url, navigating: false };
+      await renderOrder();
+      if (handoff) countDownToPayment(3);
+      else schedulePoll();
     } catch (error) { message('form-error', error.name === 'TimeoutError' ? '请求暂未返回。请点击重试，同一笔请求不会重复创建订单。' : error.message); }
     finally { busy(false); resetCaptcha(); }
   } finally { submitting = false; }
 });
-$('check-payment').addEventListener('click', () => { clearTimeout(timer); poll(); });
+$('check-payment').addEventListener('click', checkPayment);
 $('start-again').addEventListener('click', () => {
+  if (handoff) { openPaymentPage(); return; }
   if (order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
-  stopPolling(); order = null; storage.set(null); requestFingerprint = null; requestKey = null;
+  stopPolling(); resetManualCheck(); order = null; storage.set(null); requestFingerprint = null; requestKey = null;
   $('payment-view').hidden = true; $('success-animation').hidden = true; $('hero').hidden = false; form.hidden = false; message('poll-error'); resetCaptcha(); $('amount').focus();
 });
 $('demo-pay').addEventListener('click', async () => {
@@ -133,9 +281,12 @@ $('demo-pay').addEventListener('click', async () => {
   catch (error) { message('poll-error', error.message); }
   finally { $('demo-pay').disabled = false; }
 });
-document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else if (order?.status === 'pending') poll(); });
-window.addEventListener('pagehide', () => { stopPolling(); if (nicknameDialog.open) nicknameDialog.close(); });
-window.addEventListener('pageshow', () => { if (order?.status === 'pending') { clearInterval(countdown); countdown = setInterval(tick, 1000); poll(); } });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(timer); clearTimeout(handoffTimer); }
+  else void resumePayment();
+});
+window.addEventListener('pagehide', () => { stopPolling(); clearTimeout(handoffTimer); if (nicknameDialog.open) nicknameDialog.close(); });
+window.addEventListener('pageshow', (event) => { if (event.persisted) void resumePayment(); });
 async function loadCaptcha() {
   if (!config.turnstileSiteKey || !config.paymentsAvailable) return;
   await new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'; script.onload = resolve; script.onerror = reject; document.head.append(script); });

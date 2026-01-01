@@ -54,6 +54,14 @@ export async function readJson(request) {
   const bytes = new Uint8Array(length); let cursor = 0; for (const chunk of chunks) { bytes.set(chunk, cursor); cursor += chunk.length; }
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new ApiError(400, 'INVALID_JSON', '请求格式不正确。'); }
 }
+export async function readTurnstileSettings(env, demo = false) {
+  if (demo) return { turnstileEnabled: false, turnstileConfigured: false };
+  const settings = await env.DB?.prepare?.('SELECT turnstile_enabled FROM checkout_settings WHERE singleton=1').first();
+  return {
+    turnstileEnabled: settings?.turnstile_enabled !== 0,
+    turnstileConfigured: Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET_KEY),
+  };
+}
 export async function verifyTurnstile(request, env, token, fetcher = fetch) {
   if (!env.TURNSTILE_SECRET_KEY || typeof token !== 'string' || !token || token.length > 2048) throw new ApiError(403, 'CAPTCHA_REQUIRED', '请完成人机验证。');
   const data = new FormData(); data.set('secret', env.TURNSTILE_SECRET_KEY); data.set('response', token);

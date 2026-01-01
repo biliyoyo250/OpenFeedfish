@@ -9,6 +9,8 @@ const retryButton = element('retry-button');
 const importButton = element('import-button');
 const loginStart = element('login-start');
 const loginCancel = element('login-cancel');
+const turnstileToggle = element('turnstile-toggle');
+const turnstileSettingsPath = '/api/admin/settings/turnstile';
 let session = null;
 let busy = false;
 const connectionInput = (() => {
@@ -66,6 +68,17 @@ function updateControls() {
   refreshButton.disabled = !writable;
   retryButton.hidden = !pending;
   retryButton.disabled = !writable || Boolean(pending?.busy);
+  const turnstileKnown = typeof session?.turnstileEnabled === 'boolean' && typeof session?.turnstileConfigured === 'boolean';
+  const turnstileEnabled = session?.turnstileEnabled === true;
+  turnstileToggle.disabled = !writable || !turnstileKnown || (!turnstileEnabled && !session.turnstileConfigured);
+  turnstileToggle.setAttribute('aria-checked', String(turnstileEnabled));
+  turnstileToggle.textContent = !turnstileKnown ? '状态待确认' : turnstileEnabled ? '已开启' : '已关闭';
+  const turnstileStatus = element('turnstile-status');
+  turnstileStatus.textContent = !session ? '确认管理员身份后读取设置。'
+    : session.demo ? '本地演示为只读。'
+    : !turnstileKnown ? '验证码设置暂不可用，请重新加载页面。'
+    : !session.turnstileConfigured ? '启用需要配置 Turnstile 站点密钥和服务器密钥。' : '';
+  turnstileStatus.hidden = !turnstileStatus.textContent;
 }
 
 function lockAccess() {
@@ -217,12 +230,14 @@ async function mutate(path, body, successMessage, sensitive = false) {
   if (!session || session.demo || busy) return;
   busy = true;
   updateControls();
-  setNotice('');
+  setNotice(path === turnstileSettingsPath ? '正在保存验证码设置…' : '');
   let saved = false;
   try {
     const result = await request(path, body);
     saved = true;
-    await refresh();
+    if (path === turnstileSettingsPath && typeof result?.turnstileEnabled === 'boolean' && typeof result.turnstileConfigured === 'boolean') {
+      if (session) Object.assign(session, { turnstileEnabled: result.turnstileEnabled, turnstileConfigured: result.turnstileConfigured });
+    } else await refresh();
     setNotice(path.endsWith('/discard') && result.revoked === false ? '本站暂存已清除，上游注销未能确认。' : successMessage);
   } catch (error) {
     if (['/api/admin/account/session', '/api/admin/account/authorize/complete', '/api/admin/account/authorize/retry'].includes(path)) await refresh().catch(() => {});
@@ -235,6 +250,12 @@ async function mutate(path, body, successMessage, sensitive = false) {
     updateControls();
   }
 }
+
+turnstileToggle.addEventListener('click', () => {
+  if (turnstileToggle.disabled) return;
+  const enabled = !session.turnstileEnabled;
+  void mutate(turnstileSettingsPath, { enabled }, enabled ? '付款页人机验证码已开启。' : '付款页人机验证码已关闭。');
+});
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();

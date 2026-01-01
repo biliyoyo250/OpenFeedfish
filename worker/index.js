@@ -1,4 +1,4 @@
-import { ApiError, parseAmount, formatAmount, validateOrder, isDemo, hash, accessToken, publicOrder, assertOrigin, readJson, verifyTurnstile } from './lib.js';
+import { ApiError, parseAmount, formatAmount, validateOrder, isDemo, hash, accessToken, publicOrder, assertOrigin, readJson, readTurnstileSettings, verifyTurnstile } from './lib.js';
 import { providerReady, createPayment, queryPaymentInvoice } from './provider.js';
 import { handleAdmin } from './admin.js';
 import { AGENT_CHECK_INTERVAL, applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconcile.js';
@@ -13,9 +13,10 @@ const localSecret = 'feedfish-local-demo-not-valid-in-production';
 const secretFor = (env, demo) => demo ? localSecret : env.ORDER_TOKEN_SECRET;
 async function paymentConfig(env, demo) {
   const paymentMethods = demo ? ['wechat', 'alipay'] : (env.PUBLIC_PAYMENT_METHODS || 'wechat,alipay').split(',').map((value) => value.trim()).filter((value, index, all) => ['wechat', 'alipay'].includes(value) && all.indexOf(value) === index);
-  const config = { currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileSiteKey: demo ? '' : env.TURNSTILE_SITE_KEY || '', demo, paymentMethods, paymentsEnabled: demo || env.PAYMENTS_ENABLED === 'true', paymentsAvailable: demo };
+  const { turnstileEnabled, turnstileConfigured } = await readTurnstileSettings(env, demo);
+  const config = { currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileEnabled, turnstileSiteKey: turnstileEnabled ? env.TURNSTILE_SITE_KEY || '' : '', demo, paymentMethods, paymentsEnabled: demo || env.PAYMENTS_ENABLED === 'true', paymentsAvailable: demo };
   let accountId = demo ? null : env.DEEPSEEK_ACCOUNT_ID || null;
-  if (demo || !config.paymentsEnabled || !paymentMethods.length || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET || !env.TURNSTILE_SITE_KEY || !env.TURNSTILE_SECRET_KEY) return { config, accountId };
+  if (demo || !config.paymentsEnabled || !paymentMethods.length || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET || (turnstileEnabled && !turnstileConfigured)) return { config, accountId };
   if (env.PUBLIC_PAYMENT_TRANSPORT === 'agent') {
     try {
       const response = await agentRequest(env, '/status'); const status = response.ok ? await response.json() : {};
@@ -61,7 +62,7 @@ async function createOrder(request, env, demo) {
   if (!config.paymentsAvailable) throw new ApiError(503, 'PAYMENTS_UNAVAILABLE', '收款暂时不可用，请稍后重试。');
   if (!config.paymentMethods.includes(input.paymentMethod)) throw new ApiError(409, 'METHOD_UNAVAILABLE', '此支付方式暂未开放，请选择可用方式。');
   if (input.amountFen > parseAmount(config.maxAmount)) throw new ApiError(400, 'INVALID_AMOUNT', `当前支持 ${config.minAmount}–${config.maxAmount} CNY。`);
-  if (!demo) await verifyTurnstile(request, env, body.turnstileToken);
+  if (config.turnstileEnabled) await verifyTurnstile(request, env, body.turnstileToken);
   const now = Date.now(); const id = canRetry ? existing.id : crypto.randomUUID(); const token = await accessToken(id, secretFor(env, demo));
   const insert = canRetry
     ? await env.DB.prepare("UPDATE orders SET status='creating',payment_state='creating',last_check_error=NULL,expires_at=? WHERE id=? AND status='failed' AND provider_order_id IS NULL AND provider_status IS NULL AND qr_code IS NULL").bind(now + 900000, id).run()

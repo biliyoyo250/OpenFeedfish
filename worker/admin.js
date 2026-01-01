@@ -1,4 +1,4 @@
-import { ApiError, assertOrigin, readJson, formatAmount, publicOrder } from './lib.js';
+import { ApiError, assertOrigin, readJson, readTurnstileSettings, formatAmount, publicOrder } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount, accountFromProfile, queryPayment } from './provider.js';
@@ -40,7 +40,7 @@ export async function handleAdmin(request, env) {
     const response = await env.ASSETS.fetch(new Request(url, { method: 'GET' }));
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   }
-  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, ...await readTurnstileSettings(env, identity.demo), legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
   if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true }) : agentRequest(env, '/status');
   if (path === '/api/admin/account/agent-payment/status' && request.method === 'GET') return json({ order: identity.demo ? null : await readAgentTestOrder(env, new URL(request.url).searchParams.get('id')) });
   if (path === '/api/admin/browser-agent/socket' && request.method === 'GET' && !identity.demo) { assertOrigin(request, false); return agentViewer(request, env, identity); }
@@ -69,6 +69,16 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  if (path === '/api/admin/settings/turnstile') {
+    if (typeof body?.enabled !== 'boolean') throw new ApiError(400, 'INVALID_TURNSTILE_SETTING', '请选择开启或关闭人机验证码。');
+    const { turnstileConfigured } = await readTurnstileSettings(env);
+    if (body.enabled && !turnstileConfigured) throw new ApiError(409, 'TURNSTILE_NOT_CONFIGURED', '请先配置 Turnstile 站点键和密钥。');
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO checkout_settings (singleton, turnstile_enabled) VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET turnstile_enabled=excluded.turnstile_enabled').bind(body.enabled ? 1 : 0),
+      env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(body.enabled ? 'turnstile_enabled' : 'turnstile_disabled', identity.email, now),
+    ]);
+    return json({ turnstileEnabled: body.enabled, turnstileConfigured });
+  }
   assertAdminPaymentTransport(env, path, body);
   if (path === '/api/admin/browser-agent/recipient') {
     if (!['select', 'clear'].includes(body.action)) throw new ApiError(400, 'INVALID_REQUEST', '请选择收款账号操作。');

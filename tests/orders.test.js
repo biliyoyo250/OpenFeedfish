@@ -30,6 +30,7 @@ function setup({ migrateAdminTests = true } = {}) {
   db.exec(readFileSync(new URL('../migrations/0007_agent_transport.sql', import.meta.url), 'utf8'));
   if (migrateAdminTests) db.exec(readFileSync(new URL('../migrations/0008_admin_test_orders.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0009_order_receiving_account.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0010_turnstile_setting.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
@@ -40,7 +41,7 @@ function setup({ migrateAdminTests = true } = {}) {
 function publicAgentSetup(t) {
   const state = setup(); const { env } = state;
   Object.assign(env, { LOCAL_DEMO: 'false', DEEPSEEK_ACCOUNT_ID: 'fixed', PAYMENTS_ENABLED: 'true', PUBLIC_PAYMENT_TRANSPORT: 'agent', PUBLIC_PAYMENT_METHODS: 'alipay', ORDER_TOKEN_SECRET: 's'.repeat(40), TURNSTILE_SITE_KEY: 'fixture-site', TURNSTILE_SECRET_KEY: 'private-fixture-secret' });
-  const control = { online: true, protocol: 2, receivingAccountId: 'fixed', jobs: [], failure: null, paid: false, amount: '37' };
+  const control = { online: true, protocol: 2, receivingAccountId: 'fixed', jobs: [], failure: null, paid: false, amount: '37', siteverifyCalls: 0 };
   env.AGENT_RELAY = { idFromName: () => 'fixed-account-browser', get: () => ({ fetch: async (request) => {
     const path = new URL(request.url).pathname;
     if (path === '/status') return Response.json({ configured: true, online: control.online, paymentProtocol: control.protocol, receivingAccountId: control.receivingAccountId });
@@ -55,7 +56,9 @@ function publicAgentSetup(t) {
     return Response.json({ ok: true, httpStatus: 200, isJson: true, creationAttempted: job.operation === 'create', data: { code: 0, data: { biz_code: 0, biz_data: data } } });
   } }) };
   t.mock.method(globalThis, 'fetch', async (url) => {
+    if (control.accessJwks && url === `${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`) return Response.json(control.accessJwks);
     assert.equal(url, 'https://challenges.cloudflare.com/turnstile/v0/siteverify');
+    control.siteverifyCalls++;
     return Response.json({ success: true, hostname: 'feedfish.example', action: 'create_order' });
   });
   const request = (path, options = {}, ctx) => worker.fetch(new Request(`https://feedfish.example${path}`, options), env, ctx);
@@ -674,6 +677,51 @@ test('public checkout rejects disabled methods, legacy oversized amounts, offlin
   env.PAYMENTS_ENABLED = 'false';
   assert.equal((await create()).status, 503);
   assert.equal(control.jobs.length, 0); assert.equal(db.prepare('SELECT count(*) AS n FROM orders').get().n, 0);
+});
+
+test('an authenticated admin can disable checkout Turnstile and restore token enforcement', async (t) => {
+  const { env, request, create, control } = publicAgentSetup(t);
+  Object.assign(env, { ACCESS_TEAM_DOMAIN: 'https://turnstile-fixture.cloudflareaccess.com', ACCESS_AUD: 'admin-app', ADMIN_EMAILS: 'owner@example.com' });
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const jwk = await exportJWK(publicKey);
+  jwk.kid = 'turnstile-fixture';
+  control.accessJwks = { keys: [jwk] };
+  const jwt = await new SignJWT({ email: 'owner@example.com' })
+    .setProtectedHeader({ alg: 'RS256', kid: jwk.kid }).setSubject('owner').setIssuer(env.ACCESS_TEAM_DOMAIN)
+    .setAudience(env.ACCESS_AUD).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+  const adminHeaders = { 'Cf-Access-Jwt-Assertion': jwt };
+  const checkoutConfig = async () => (await request('/api/config')).json();
+  const session = async () => (await request('/api/admin/session', { headers: adminHeaders })).json();
+  const toggle = (enabled, headers = adminHeaders) => request('/api/admin/settings/turnstile', {
+    method: 'POST',
+    headers: { Origin: 'https://feedfish.example', 'Content-Type': 'application/json', 'X-Feedfish-Admin': '1', ...headers },
+    body: JSON.stringify({ enabled })
+  });
+
+  assert.equal((await session()).turnstileEnabled, true);
+  assert.equal((await checkoutConfig()).turnstileSiteKey, 'fixture-site');
+  assert.equal((await create({ turnstileToken: undefined })).status, 403);
+  assert.equal((await toggle(false, { 'Cf-Access-Authenticated-User-Email': 'owner@example.com' })).status, 403);
+  assert.equal((await toggle(false, { ...adminHeaders, Origin: 'https://foreign.example' })).status, 403);
+  assert.equal((await toggle('false')).status, 400);
+  assert.equal((await session()).turnstileEnabled, true);
+
+  assert.equal((await toggle(false)).status, 200);
+  assert.equal((await session()).turnstileEnabled, false);
+  assert.equal((await session()).turnstileConfigured, true);
+  assert.equal((await checkoutConfig()).turnstileSiteKey, '');
+  delete env.TURNSTILE_SITE_KEY;
+  delete env.TURNSTILE_SECRET_KEY;
+  assert.equal((await checkoutConfig()).paymentsAvailable, true);
+  assert.equal((await create({ turnstileToken: undefined })).status, 201);
+  assert.equal(control.siteverifyCalls, 0);
+
+  assert.ok(!(await toggle(true)).ok, 'the admin cannot enable an unconfigured widget');
+  assert.equal((await session()).turnstileEnabled, false);
+  Object.assign(env, { TURNSTILE_SITE_KEY: 'fixture-site', TURNSTILE_SECRET_KEY: 'private-fixture-secret' });
+  assert.equal((await toggle(true)).status, 200);
+  assert.equal((await checkoutConfig()).turnstileSiteKey, 'fixture-site');
+  assert.equal((await create({ turnstileToken: undefined })).status, 403);
 });
 
 test('public retries reuse an unsent reservation but an uncertain creation cannot be replayed', async (t) => {

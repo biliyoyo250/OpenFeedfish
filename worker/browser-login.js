@@ -1,5 +1,7 @@
 import { ApiError } from './lib.js';
 import { seal, unseal } from './vault.js';
+import { accountFromProfile } from './provider.js';
+import { platformClientHeaders } from './platform-client.js';
 
 const origin = 'https://platform.deepseek.com';
 const lifetime = 5 * 60 * 1000;
@@ -231,4 +233,59 @@ export async function anonymousBrowserConnectivity(env) {
     return { mode: 'browser', reachable: false, code };
   }
   finally { if (browser) await terminate(browser); }
+}
+
+// Access-protected, read-only check of an existing PKCE grant. Authentication
+// headers belong only to the fixed account fetch, never to page navigation or
+// third-party assets. No login, CAPTCHA solving, or payment happens here.
+export async function verifyAccountInBrowser(env, credentials, sdk) {
+  if (!env.BROWSER || !env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'BROWSER_NOT_CONFIGURED', '请先配置云浏览器和固定账户。');
+  if (typeof credentials.dshToken !== 'string' || !credentials.dshToken) throw new ApiError(409, 'BROWSER_GRANT_REQUIRED', '此检查需要已保存的官方授权。');
+  sdk ||= await sdkFor();
+  let browser, sessionId;
+  try {
+    const limits = await sdk.limits(env.BROWSER);
+    if (!(limits.allowedBrowserAcquisitions > 0) || limits.timeUntilNextAllowedBrowserAcquisition > 0 || limits.activeSessions?.length >= limits.maxConcurrentSessions) throw new ApiError(503, 'BROWSER_BUSY', '云浏览器资源暂不可用，请稍后再核验。');
+    ({ sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 10000, recording: false }));
+    browser = await connect(env, sdk, sessionId);
+    const page = await browser.contexts()[0].newPage();
+    await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    if (new URL(page.url()).origin !== origin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止传递账户凭证。');
+    const result = await page.evaluate(async (headers) => {
+      if (location.origin !== 'https://platform.deepseek.com') return { wrongOrigin: true };
+      const response = await fetch('https://platform.deepseek.com/auth-api/v0/users/current', { method: 'GET', headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+      const isJson = response.headers.get('content-type')?.includes('application/json') || false;
+      const challenge = response.headers.get('x-amzn-waf-action') || response.headers.get('cf-mitigated');
+      const result = { httpStatus: response.status, isJson, ...(challenge === 'challenge' || challenge === 'captcha' ? { challenge } : {}) };
+      if (!isJson) return result;
+      const data = await response.json();
+      if (Number.isSafeInteger(data?.code)) result.code = data.code;
+      if (Number.isSafeInteger(data?.data?.biz_code)) result.bizCode = data.data.biz_code;
+      const user = data?.data?.biz_data;
+      if (data?.code === 0 && data?.data?.biz_code === 0 && user) result.user = { id: user.id, currency: user.currency, is_api_banned: user.is_api_banned, feature_gates: { PAYMENT: user.feature_gates?.PAYMENT } };
+      return result;
+    }, { Accept: 'application/json', ...platformClientHeaders, 'x-dsh-auth-token': credentials.dshToken, ...(credentials.deviceId ? { 'x-device-id': credentials.deviceId } : {}), ...(credentials.deviceModel ? { 'x-device-model': credentials.deviceModel } : {}) });
+    const diagnostic = (error) => {
+      if (Number.isInteger(result.httpStatus)) error.upstreamStatus = result.httpStatus;
+      if (Number.isSafeInteger(result.code)) error.upstreamCode = result.code;
+      if (Number.isSafeInteger(result.bizCode)) error.upstreamBizCode = result.bizCode;
+      if (['captcha', 'challenge'].includes(result.challenge)) error.upstreamChallenge = result.challenge;
+      return error;
+    };
+    if (result.wrongOrigin) throw new ApiError(503, 'UPSTREAM_REDIRECT', '官方页面发生跳转，已停止账户请求。');
+    if (result.httpStatus === 401 || result.code === 40002 || result.code === 40003) throw diagnostic(new ApiError(503, 'SESSION_EXPIRED', 'DeepSeek 未接受保存的账户授权。'));
+    if (!result.isJson) throw diagnostic(new ApiError(503, 'UPSTREAM_NOT_JSON', '云浏览器未取得 JSON；请管理员检查官方页面是否要求人机验证。'));
+    if (result.httpStatus < 200 || result.httpStatus >= 300 || result.code !== 0 || result.bizCode !== 0) throw diagnostic(new ApiError(503, 'UPSTREAM_REJECTED', 'DeepSeek 未接受云浏览器中的账户请求。'));
+    const account = accountFromProfile(result.user);
+    if (account.id !== env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(409, 'ACCOUNT_MISMATCH', '授权账户与固定收款账户不一致。');
+    return account;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(503, /429/.test(String(error?.message)) ? 'BROWSER_RATE_LIMIT' : 'BROWSER_UNAVAILABLE', '云浏览器账户核验暂不可用，请稍后再检查。');
+  } finally {
+    // If connecting failed after acquisition, retry only the connection for
+    // cleanup, never acquire another instance. The idle fuse is ten seconds.
+    if (!browser && sessionId) { try { browser = await connect(env, sdk, sessionId); } catch { /* Backend idle expiry remains the final fuse. */ } }
+    if (browser) await terminate(browser);
+  }
 }

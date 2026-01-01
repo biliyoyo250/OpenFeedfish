@@ -1,4 +1,9 @@
 const messages = {
+  BROWSER_NOT_CONFIGURED: '云浏览器或固定账户尚未配置。',
+  BROWSER_GRANT_REQUIRED: '云浏览器核验需要已保存的官方授权。',
+  BROWSER_BUSY: '云浏览器资源暂不可用，请稍后再核验。',
+  BROWSER_RATE_LIMIT: 'Cloudflare 暂时限制了云浏览器请求，请稍后再核验。',
+  BROWSER_UNAVAILABLE: '云浏览器账户核验暂不可用，请稍后再检查。',
   AUTH_EXPIRED: '本次授权已结束，请重新运行本机连接助手。',
   AUTH_BUSY: '账户核验正在处理，请稍后重试。',
   AUTH_PENDING: '已有待核验授权，请重试账户核验或取消暂存。',

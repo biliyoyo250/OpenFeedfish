@@ -5,6 +5,7 @@ const fields = element('session-fields');
 const form = element('session-form');
 const refreshButton = element('refresh-button');
 const checkButton = element('check-button');
+const browserCheckButton = element('browser-check-button');
 const disableButton = element('disable-button');
 const importButton = element('import-button');
 const loginStart = element('login-start');
@@ -72,6 +73,7 @@ function updateControls() {
   refreshButton.disabled = !writable;
   checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
   checkButton.textContent = pending ? '重试账户核验' : '验证连接';
+  browserCheckButton.disabled = !writable || Boolean(pending) || !session?.account?.configured;
   disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
   for (const button of testButtons) button.disabled = !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
 }
@@ -291,6 +293,9 @@ loginCancel.addEventListener('click', () => {
 checkButton.addEventListener('click', () => {
   if (!checkButton.disabled && session?.pendingAuthorization) { void mutate('/api/admin/account/authorize/retry', { id: session.pendingAuthorization.id }, '会话已验证并加密保存。', true); return; }
   if (!checkButton.disabled) void mutate('/api/admin/account/check', {}, '连接验证已完成，账户状态已更新。');
+});
+browserCheckButton.addEventListener('click', () => {
+  if (!browserCheckButton.disabled) void mutate('/api/admin/account/check', { transport: 'browser' }, 'Cloudflare 云浏览器已核验固定账户，未创建付款账单。');
 });
 
 for (const button of testButtons) button.addEventListener('click', async () => {

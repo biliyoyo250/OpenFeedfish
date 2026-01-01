@@ -2,7 +2,7 @@ import { ApiError, assertOrigin, readJson, formatAmount } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount, accountFromProfile } from './provider.js';
-import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus } from './browser-login.js';
+import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity, browserResourceStatus, verifyAccountInBrowser } from './browser-login.js';
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity, lastAuthorizationFailure, recordAuthorizationFailure } from './authorization.js';
 import { pendingAuthorizationState, verifyPendingAuthorization, discardPendingAuthorization } from './pending-authorization.js';
 import { createAdminTestPayment } from './admin-payments.js';
@@ -87,13 +87,22 @@ export async function handleAdmin(request, env) {
     return json({ ok: true, accountId: account.id, requiresPin: !env.DEEPSEEK_ACCOUNT_ID });
   }
   if (path === '/api/admin/account/check') {
+    if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '账户核验方式无效。');
     try {
-      const credentials = await credentialsFor(env, true); const account = await verifyAccount(env, credentials);
+      const credentials = await credentialsFor(env, true);
+      const account = body.transport === 'browser' ? await verifyAccountInBrowser(env, credentials) : await verifyAccount(env, credentials);
       const sealed = await seal(credentials, env.ACCOUNT_ENCRYPTION_KEY);
       await env.DB.prepare('INSERT INTO account_session (singleton,account_id,sealed_credentials,status,updated_at,last_checked_at,updated_by) VALUES (1,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET last_checked_at=excluded.last_checked_at').bind(account.id, sealed, 'connected', now, now, identity.email).run();
     }
-    catch (error) { if (error.code === 'SESSION_EXPIRED' || error.code === 'ACCOUNT_MISMATCH') await env.DB.prepare('UPDATE account_session SET status=?,last_checked_at=? WHERE singleton=1').bind('unverified', now).run(); throw error; }
-    await audit(env, 'session_checked', identity.email, now); return json({ ok: true });
+    catch (error) {
+      if (error.code === 'SESSION_EXPIRED' || error.code === 'ACCOUNT_MISMATCH') await env.DB.prepare('UPDATE account_session SET status=?,last_checked_at=? WHERE singleton=1').bind('unverified', now).run();
+      if (body.transport === 'browser' && error instanceof ApiError) {
+        await recordAuthorizationFailure(env, identity, 'account', error);
+        return json({ error: { code: error.code, message: error.message, diagnostic: error.authorizationDiagnostic } }, error.status);
+      }
+      throw error;
+    }
+    await audit(env, body.transport === 'browser' ? 'session_browser_checked' : 'session_checked', identity.email, now); return json({ ok: true });
   }
   if (path === '/api/admin/account/disable') {
     if (!env.DEEPSEEK_ACCOUNT_ID) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '固定账号尚未配置。');

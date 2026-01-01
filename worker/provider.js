@@ -1,13 +1,14 @@
 import { ApiError, parseAmount, withUpstreamDiagnostic } from './lib.js';
 import { credentialsFor, accountState } from './vault.js';
-import { platformClientHeaders } from './authorization.js';
+import { platformClientHeaders } from './platform-client.js';
 const origin = 'https://platform.deepseek.com';
 export async function providerReady(env) {
   const state = await accountState(env);
   return !!env.DEEPSEEK_ACCOUNT_ID && state.configured;
 }
 export async function upstream(path, credentials, body, fetcher = fetch) {
-  const headers = { Accept: 'application/json', Origin: origin, Referer: `${origin}/top_up` };
+  const headers = { Accept: 'application/json' };
+  if (!credentials.dshToken) Object.assign(headers, { Origin: origin, Referer: `${origin}/top_up` });
   if (credentials.sessionToken) headers.Authorization = `Bearer ${credentials.sessionToken}`;
   if (credentials.dshToken) { Object.assign(headers, platformClientHeaders); headers['x-dsh-auth-token'] = credentials.dshToken; }
   const cookie = cookieHeader(credentials.cookies || [], path);

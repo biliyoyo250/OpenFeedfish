@@ -26,6 +26,8 @@ test('account requests work in workerd and never forward credentials through red
       requests.push(request.url);
       assert.equal(new URL(request.url).origin, 'https://platform.deepseek.com');
       assert.equal(request.headers.get('x-dsh-auth-token'), 'runtime-test-not-a-real-credential');
+      assert.equal(request.headers.get('origin'), null);
+      assert.equal(request.headers.get('referer'), null);
       return redirect ? Response.redirect('https://untrusted.invalid/steal', 302)
         : Response.json({ code: 0, data: { biz_code: 0, biz_data: { id: 'runtime-account', currency: 'CNY' } } });
     },

@@ -190,3 +190,23 @@ export async function cleanupBrowserLogin(env, sdk, now = Date.now()) {
   const row = await rowFor(env);
   if (row && row.state !== 'closed' && row.expires_at <= now) await closeRow(env, row, sdk);
 }
+export async function anonymousBrowserConnectivity(env) {
+  let browser;
+  try {
+    if (!env.BROWSER) return { mode: 'browser', reachable: false, code: 'BROWSER_NOT_CONFIGURED' };
+    const sdk = await sdkFor();
+    const { sessionId } = await sdk.acquire(env.BROWSER, { keep_alive: 10000, recording: false });
+    browser = await connect(env, sdk, sessionId);
+    const page = await browser.contexts()[0].newPage();
+    await page.goto(`${origin}/sign_in`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    const result = await page.evaluate(async () => {
+      const response = await fetch('/auth-api/v0/users/current', { headers: { Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(10000) });
+      const isJson = response.headers.get('content-type')?.includes('application/json') || false;
+      let code = null;
+      if (isJson) { const data = await response.json(); if (Number.isInteger(data.code)) code = data.code; }
+      return { httpStatus: response.status, isJson, code };
+    });
+    return { mode: 'browser', reachable: true, ...result };
+  } catch (error) { return { mode: 'browser', reachable: false, code: /Browser time limit exceeded|429/.test(String(error.message)) ? 'BROWSER_QUOTA' : 'BROWSER_UNAVAILABLE' }; }
+  finally { if (browser) await terminate(browser); }
+}

@@ -2,7 +2,7 @@ import { ApiError, assertOrigin, readJson, formatAmount } from './lib.js';
 import { requireAdmin } from './access.js';
 import { accountState, credentialsFor, seal } from './vault.js';
 import { inspectAccount, verifyAccount } from './provider.js';
-import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics } from './browser-login.js';
+import { browserLoginState, startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginDiagnostics, anonymousBrowserConnectivity } from './browser-login.js';
 import { authorizationState, startAuthorization, completeAuthorization, cancelAuthorization, authorizationConnectivity } from './authorization.js';
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
 const json = (data, status = 200) => Response.json(data, { status, headers });
@@ -26,6 +26,7 @@ export async function handleAdmin(request, env) {
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
   if (path === '/api/admin/account/authorize/connectivity' && request.method === 'GET' && !identity.demo) {
     const mode = new URL(request.url).searchParams.get('mode');
+    if (mode === 'browser') return json(await anonymousBrowserConnectivity(env));
     return json(await authorizationConnectivity(fetch, mode === 'dsh' || mode === 'client' ? mode : 'anonymous'));
   }
   if (path === '/api/admin/orders' && request.method === 'GET') {

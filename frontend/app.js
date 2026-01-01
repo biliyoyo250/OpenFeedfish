@@ -5,8 +5,8 @@ import { createDebugCheckout } from './debug-checkout.js';
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
 const weChatMethod = form.querySelector('input[name="paymentMethod"][value="wechat"]');
-const debugCheckout = new URLSearchParams(location.search).get('debug') === '1' ? createDebugCheckout() : null;
-const storageKey = 'feedfish-order-v1';
+const debugMode = new URLSearchParams(location.search).get('debug') === '1';
+const storageKey = debugMode ? 'feedfish-debug-order-v1' : 'feedfish-order-v1';
 const inWeChat = /\bMicroMessenger\b/i.test(navigator.userAgent);
 const checkDelays = [0, 0, 3000, 3000, 5000, 5000, 7000, 7000];
 const checkFishMessages = {
@@ -34,20 +34,19 @@ const unavailablePoster = '/assets/payment-peek.png';
 initFish();
 const storage = {
   get() {
-    if (debugCheckout) return null;
     try { return JSON.parse(sessionStorage.getItem(storageKey)); } catch { return null; }
   },
   set(value) {
-    if (debugCheckout) return;
     try { value ? sessionStorage.setItem(storageKey, JSON.stringify(value)) : sessionStorage.removeItem(storageKey); } catch {}
   },
 };
+const debugCheckout = debugMode ? createDebugCheckout(storage.get()) : null;
+const fetchCheckout = debugCheckout?.fetch ?? fetch;
 function message(id, text = '') { $(id).textContent = text; $(id).hidden = !text; }
 function busy(value) { $('submit-button').disabled = value || !config || (!config.demo && !config.paymentsAvailable); $('submit-label').textContent = value ? '正在准备付款码…' : '生成付款码'; }
 async function api(path, options = {}) {
-  if (debugCheckout) return debugCheckout.request(path, options);
   const { timeout = 20000, ...request } = options;
-  const response = await fetch(path, { ...request, signal: AbortSignal.timeout(timeout), headers: { 'Content-Type': 'application/json', ...request.headers } });
+  const response = await fetchCheckout(path, { ...request, signal: AbortSignal.timeout(timeout), headers: { 'Content-Type': 'application/json', ...request.headers } });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) { const error = new Error(body.error?.message || '暂时无法连接，请稍后再试。'); error.status = response.status; error.code = body.error?.code; throw error; }
   return body;
@@ -64,7 +63,8 @@ function weChatPaymentUrl() {
   if (!inWeChat || config.demo || order?.status !== 'pending' || order.paymentState === 'expired' || !(Date.parse(order.expiresAt) > Date.now())) return null;
   try {
     const url = new URL(order.qrCode);
-    return url.origin === 'https://qr.95516.com' && !url.username && !url.password ? url.href : null;
+    const allowed = debugCheckout ? url.href === debugCheckout.paymentUrl : url.origin === 'https://qr.95516.com';
+    return allowed && !url.username && !url.password ? url.href : null;
   } catch { return null; }
 }
 
@@ -193,7 +193,7 @@ function renderQrOverlay(pending, unavailable) {
     message('payment-unavailable-caption');
     return;
   }
-  const caption = timedOut && (!config.demo || debugCheckout) ? '你浪费了15分钟盯着我看' : '';
+  const caption = timedOut && !config.demo ? '你浪费了15分钟盯着我看' : '';
   if ($('payment-unavailable-caption').textContent !== caption) message('payment-unavailable-caption', caption);
   if (!unavailableImage.hasAttribute('src')) unavailableImage.src = reducedMotion.matches ? unavailablePoster : unavailableAnimation;
 }
@@ -247,12 +247,13 @@ async function renderOrder(verified = true) {
   $('check-payment').hidden = !showActions;
   $('return-merchant').hidden = !showActions;
   if (!showActions) { message('manual-check-status'); removeCheckFish(); }
-  $('demo-pay').hidden = !config.demo || !pending || unavailable;
+  $('demo-pay').hidden = !(config.demo || debugCheckout) || !pending || unavailable;
   $('debug-expire').hidden = !debugCheckout || !pending || unavailable;
   const paymentLink = $('payment-link');
   const weChatUrl = showActions && !unavailable ? weChatPaymentUrl() : null;
   const weChatLink = order.paymentMethod === 'wechat' ? weChatUrl : null;
-  const alipayLink = !inWeChat && order.paymentUrl?.startsWith('https://') ? order.paymentUrl : null;
+  const allowedPaymentUrl = debugCheckout ? order.paymentUrl === debugCheckout.paymentUrl : order.paymentUrl?.startsWith('https://');
+  const alipayLink = !inWeChat && allowedPaymentUrl ? order.paymentUrl : null;
   const directUrl = weChatLink || alipayLink;
   $('switch-wechat').hidden = !weChatUrl || order.paymentMethod !== 'alipay' || weChatMethod.disabled;
   paymentLink.hidden = !showActions || unavailable || !directUrl;
@@ -387,12 +388,9 @@ form.addEventListener('submit', async (event) => {
     }
     if (config.turnstileSiteKey && !token) { message('form-error', '请先完成人机验证。'); return; }
     const body = { amount, nickname: $('nickname').value.trim(), message: $('message').value.trim(), paymentMethod };
-    const request = { method: 'POST', body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 };
-    if (!debugCheckout) {
-      const fingerprint = JSON.stringify(body);
-      if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
-      request.headers = { 'Idempotency-Key': requestKey };
-    }
+    const fingerprint = JSON.stringify(body);
+    if (fingerprint !== requestFingerprint) { requestKey = crypto.randomUUID(); requestFingerprint = fingerprint; }
+    const request = { method: 'POST', headers: { 'Idempotency-Key': requestKey }, body: JSON.stringify({ ...body, turnstileToken: token }), timeout: 150000 };
     busy(true);
     try {
       order = await api('/api/orders', request);
@@ -415,7 +413,7 @@ $('switch-wechat').addEventListener('click', () => {
 });
 $('start-again').addEventListener('click', () => {
   if (handoff) { openPaymentPage(); return; }
-  if (!debugCheckout && order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
+  if (order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
   stopPolling(); resetManualCheck(); setQrImage(); order = null; storage.set(null); requestFingerprint = null; requestKey = null;
   renderQrOverlay(true, false);
   $('payment-view').hidden = true; $('success-animation').hidden = true; $('hero').hidden = false; form.hidden = false; message('poll-error'); resetCaptcha(); $('amount').focus();
@@ -423,16 +421,16 @@ $('start-again').addEventListener('click', () => {
 $('demo-pay').addEventListener('click', async () => {
   $('demo-pay').disabled = true;
   try {
-    const update = await api(`/api/orders/${encodeURIComponent(order.id)}/demo-pay`, { method: 'POST', headers: authenticated(), body: '{}' });
-    if (debugCheckout) await applyOrderUpdate(update);
-    else await poll();
+    await api(`/api/orders/${encodeURIComponent(order.id)}/demo-pay`, { method: 'POST', headers: authenticated(), body: '{}' });
+    await poll();
   }
   catch (error) { message('poll-error', error.message); }
   finally { $('demo-pay').disabled = false; }
 });
 $('debug-expire').addEventListener('click', async () => {
   if (!debugCheckout || order?.status !== 'pending') return;
-  await applyOrderUpdate(debugCheckout.expire());
+  debugCheckout.expire();
+  await poll();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(timer); clearTimeout(handoffTimer); }
@@ -453,7 +451,7 @@ async function loadCaptcha() {
 async function init() {
   $('debug-notice').hidden = !debugCheckout;
   try {
-    config = await api('/api/config'); $('demo-notice').hidden = !config.demo || Boolean(debugCheckout);
+    config = await api('/api/config'); $('demo-notice').hidden = !config.demo;
     if (!config.paymentsAvailable) message('config-error', config.paymentsEnabled ? '收款暂时不可用，请稍后重试。' : '收款暂未开放，请晚一点再来。');
     const methods = config.paymentMethods || ['wechat', 'alipay'];
     const choices = [...form.querySelectorAll('input[name="paymentMethod"]')];

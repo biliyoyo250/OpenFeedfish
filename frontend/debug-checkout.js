@@ -1,54 +1,70 @@
+import { ApiError, publicOrder, validateOrder } from '../worker/lib.js';
+
+const paymentUrl = 'https://example.com/';
+const accessToken = 'debug-checkout';
 const debugConfig = {
   currency: 'CNY',
   minAmount: '1.00',
   maxAmount: '100000.00',
-  demo: true,
+  demo: false,
+  paymentsEnabled: true,
   paymentsAvailable: true,
   paymentMethods: ['wechat', 'alipay'],
 };
 
-export function createDebugCheckout() {
-  let order;
+export function createDebugCheckout(saved) {
+  const expiresAt = Date.parse(saved?.expiresAt);
+  let row = saved?.accessToken === accessToken && Number.isFinite(expiresAt) ? {
+    id: saved.id,
+    amount_fen: Math.round(Number(saved.amount) * 100),
+    payment_method: saved.paymentMethod,
+    status: saved.status,
+    payment_state: saved.paymentState,
+    expires_at: expiresAt,
+    qr_code: paymentUrl,
+    payment_url: saved.paymentMethod === 'alipay' ? paymentUrl : null,
+  } : null;
 
-  function complete(status) {
-    order = { ...order, status, paymentState: status, qrCode: null };
-    return { ...order };
+  function fetch(path, { method = 'GET', body, headers } = {}) {
+    if (method === 'GET' && path === '/api/config') return Response.json(debugConfig);
+    if (method === 'POST' && path === '/api/orders') {
+      try {
+        const { amountFen, paymentMethod } = validateOrder(JSON.parse(body));
+        row = {
+          id: crypto.randomUUID(),
+          amount_fen: amountFen,
+          payment_method: paymentMethod,
+          status: 'pending',
+          payment_state: 'waiting',
+          expires_at: Date.now() + 15 * 60 * 1000,
+          qr_code: paymentUrl,
+          payment_url: paymentMethod === 'alipay' ? paymentUrl : null,
+        };
+        return Response.json({ ...publicOrder(row), accessToken }, { status: 201 });
+      } catch (error) {
+        if (!(error instanceof ApiError)) throw error;
+        return Response.json({ error: { code: error.code, message: error.message } }, { status: error.status });
+      }
+    }
+
+    const orderPath = `/api/orders/${row?.id}`;
+    const query = (method === 'GET' && path === orderPath) || (method === 'POST' && path === `${orderPath}/check`);
+    const pay = method === 'POST' && path === `${orderPath}/demo-pay`;
+    if (!row || (!query && !pay) || headers?.Authorization !== `Bearer ${accessToken}`) {
+      return Response.json({ error: { code: 'NOT_FOUND', message: '无法读取这笔订单。' } }, { status: 404 });
+    }
+    if (row.status === 'pending' && row.expires_at <= Date.now()) row.status = row.payment_state = 'expired';
+    if (pay) {
+      if (row.status !== 'pending') return Response.json({ error: { code: 'ORDER_CLOSED', message: '这笔订单已关闭。' } }, { status: 409 });
+      row.status = row.payment_state = 'paid';
+      return Response.json({ ok: true });
+    }
+    return Response.json(publicOrder(row));
   }
 
   function expire() {
-    if (order?.status === 'pending') {
-      order.expiresAt = new Date().toISOString();
-      return complete('expired');
-    }
-    return { ...order };
+    if (row?.status === 'pending') row.expires_at = Date.now();
   }
 
-  function request(path, { method = 'GET', body } = {}) {
-    if (method === 'GET' && path === '/api/config') return debugConfig;
-    if (method === 'POST' && path === '/api/orders') {
-      const { amount, paymentMethod } = JSON.parse(body);
-      const id = crypto.randomUUID();
-      order = {
-        id,
-        amount: Number(amount).toFixed(2),
-        currency: 'CNY',
-        paymentMethod,
-        status: 'pending',
-        paymentState: 'waiting',
-        qrCode: 'https://example.com/',
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-      };
-      return { ...order };
-    }
-
-    const orderPath = `/api/orders/${order?.id}`;
-    const query = (method === 'GET' && path === orderPath) || (method === 'POST' && path === `${orderPath}/check`);
-    const pay = method === 'POST' && path === `${orderPath}/demo-pay`;
-    if (!order || (!query && !pay)) throw new Error('调试模式不支持此操作。');
-    if (order.status === 'pending' && Date.parse(order.expiresAt) <= Date.now()) return complete('expired');
-    if (pay && order.status === 'pending') return complete('paid');
-    return { ...order };
-  }
-
-  return { request, expire };
+  return { fetch, expire, paymentUrl };
 }

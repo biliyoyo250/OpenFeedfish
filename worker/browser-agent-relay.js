@@ -1,5 +1,5 @@
 import { hash } from './lib.js';
-import { browserCommand, accountResult, MAX_FRAME_BYTES, validDeviceKey, validPairCode, validCommandId, AGENT_PROTOCOL } from '../shared/browser-agent-protocol.js';
+import { browserCommand, accountResult, MAX_FRAME_BYTES, validDeviceKey, validPairCode, validCommandId, AGENT_PROTOCOL, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
 
 const reply = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
 const send = (ws, value) => { try { ws.send(typeof value === 'string' || value instanceof ArrayBuffer ? value : JSON.stringify(value)); } catch { /* A disconnected peer cannot receive. */ } };
@@ -14,7 +14,7 @@ export class BrowserAgentRelay {
   live(role) {
     return this.sockets(role).filter((ws) => {
       const a = ws.deserializeAttachment();
-      if (!a || a.expiresAt <= Date.now()) { shut(ws, 4001); return false; }
+      if (!a || a.expiresAt <= Date.now()) { shut(ws, !a ? AGENT_CLOSE.SESSION_LOST : a.role === 'agent' ? AGENT_CLOSE.DEVICE_EXPIRED : AGENT_CLOSE.ACCESS_EXPIRED); return false; }
       return ws.readyState === 1;
     });
   }
@@ -51,14 +51,14 @@ export class BrowserAgentRelay {
       if (!entry) return reply({ error: 'PAIRING_EXPIRED' }, 410);
       // The authenticated admin explicitly approves replacement in the UI.
       if (await this.ctx.storage.get('device') && body.replace !== true) return reply({ error: 'DEVICE_ALREADY_PAIRED' }, 409);
-      for (const ws of this.ctx.getWebSockets()) shut(ws, 4001);
+      for (const ws of this.ctx.getWebSockets()) shut(ws, AGENT_CLOSE.REVOKED);
       const device = { id: entry.id, keyHash: entry.keyHash, name: entry.name, expiresAt: Date.now() + 30 * 86400000 };
       await this.ctx.storage.put('device', device); await this.ctx.storage.delete('pending');
       return reply({ ok: true, name: device.name, expiresAt: device.expiresAt });
     });
     if (path === '/revoke' && request.method === 'POST') return this.ctx.blockConcurrencyWhile(async () => {
       await this.ctx.storage.delete('device'); await this.ctx.storage.delete('pending');
-      for (const ws of this.ctx.getWebSockets()) shut(ws, 4001);
+      for (const ws of this.ctx.getWebSockets()) shut(ws, AGENT_CLOSE.REVOKED);
       return reply({ ok: true });
     });
     if (path === '/agent' || path === '/viewer') {
@@ -66,13 +66,14 @@ export class BrowserAgentRelay {
       const role = path === '/agent' ? 'agent' : 'viewer';
       const adminExpiresAt = Number(request.headers.get('X-Agent-Admin-Expires'));
       const device = await this.ctx.storage.get('device');
-      if (!device || device.expiresAt <= Date.now()) return reply({ error: 'DEVICE_NOT_PAIRED' }, 403);
+      if (!device) return reply({ error: 'DEVICE_NOT_PAIRED' }, 403);
+      if (device.expiresAt <= Date.now()) return reply({ error: 'DEVICE_EXPIRED' }, 403);
       if (role === 'agent' && await this.keyHash(request) !== device.keyHash) return reply({ error: 'DEVICE_DENIED' }, 403);
       if (role === 'viewer' && (!request.headers.get('X-Agent-Admin-Sub') || !Number.isSafeInteger(adminExpiresAt) || adminExpiresAt <= Date.now())) return reply({ error: 'ACCESS_DENIED' }, 403);
       if (role === 'agent') {
         for (const ws of this.live('agent')) {
           if (ws.deserializeAttachment().lastSeen > Date.now() - 45000) return reply({ error: 'DEVICE_BUSY' }, 409);
-          shut(ws, 4000);
+          shut(ws, AGENT_CLOSE.REPLACED);
         }
       } else if (this.live('viewer').length) return reply({ error: 'VIEWER_BUSY' }, 409);
       const [client, server] = Object.values(new WebSocketPair());
@@ -93,7 +94,7 @@ export class BrowserAgentRelay {
   }
   async webSocketMessage(ws, raw) {
     const a = ws.deserializeAttachment();
-    if (!a || a.expiresAt <= Date.now()) { shut(ws, 4001); return; }
+    if (!a || a.expiresAt <= Date.now()) { shut(ws, !a ? AGENT_CLOSE.SESSION_LOST : a.role === 'agent' ? AGENT_CLOSE.DEVICE_EXPIRED : AGENT_CLOSE.ACCESS_EXPIRED); return; }
     const now = Date.now(); const bucket = Math.floor(now / 1000);
     a.count = a.bucket === bucket ? a.count + 1 : 1; a.bucket = bucket; a.lastSeen = now;
     if (a.count > (a.role === 'viewer' ? 70 : 20)) { shut(ws, 1008); return; }

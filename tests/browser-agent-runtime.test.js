@@ -48,8 +48,24 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     const binary = await next(viewerMessages, (v) => typeof v !== 'string'); assert.deepEqual([...new Uint8Array(binary)], [...frame]);
     viewer.send(JSON.stringify({ type: 'frame-ack' })); await next(agentMessages, (v) => parsed(v)?.type === 'frame-ack');
     assert.equal((await (await req('/status')).json()).online, true);
+    viewer.close(1000);
+    await next(agentMessages, (v) => parsed(v)?.type === 'view' && parsed(v).active === false);
+    const afterWindowClose = await (await req('/status')).json();
+    assert.equal(afterWindowClose.configured, true); assert.equal(afterWindowClose.online, true);
+    assert.equal(afterWindowClose.controlling, false);
+    agent.send('ping'); await next(agentMessages, (v) => v === 'pong');
+    const closed = new Promise((resolveClose) => agent.addEventListener('close', (event) => resolveClose(event.code), { once: true }));
     assert.equal((await req('/revoke', {})).status, 200);
+    assert.equal(await closed, 4001);
     assert.equal((await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).status, 403);
     assert.equal((await (await req('/status')).json()).configured, false);
-  } finally { for (const socket of sockets) socket.close(); await runtime.dispose(); }
+    const replacementKey = 'N'.repeat(43);
+    const replacement = await (await req('/init', { name: 'Windows-repair', protocol: 1, keyHash: await hash(replacementKey) })).json();
+    assert.equal((await req('/approve', { code: replacement.code })).status, 200);
+    assert.equal((await (await req('/status')).json()).configured, true);
+    assert.equal((await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).status, 403);
+    const repaired = (await req('/agent', undefined, { Authorization: `Bearer ${replacementKey}`, Upgrade: 'websocket' })).webSocket;
+    assert.ok(repaired); const repairedMessages = collect(repaired);
+    repaired.send('ping'); await next(repairedMessages, (v) => v === 'pong');
+  } finally { for (const socket of sockets) { try { socket.close(); } catch {} } await runtime.dispose(); }
 });

@@ -6,11 +6,33 @@ import { hostname } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import WebSocket from 'ws';
-import { browserCommand, accountResult, MAX_FRAME_BYTES, VIEWPORT, AGENT_PROTOCOL, validDeviceKey } from '../shared/browser-agent-protocol.js';
+import { browserCommand, accountResult, MAX_FRAME_BYTES, VIEWPORT, AGENT_PROTOCOL, AGENT_CLOSE, validDeviceKey } from '../shared/browser-agent-protocol.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const platform = 'https://platform.deepseek.com';
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+const attentionCodes = new Set(['PAIRING_EXPIRED', 'PAIRING_BUSY', 'DEVICE_REVOKED', 'DEVICE_NOT_PAIRED', 'DEVICE_DENIED', 'DEVICE_EXPIRED', 'DEVICE_BUSY', 'EDGE_FORBIDDEN', 'HANDSHAKE_REDIRECT', 'HANDSHAKE_DENIED', 'INVALID_SERVER', 'AGENT_START_FAILED']);
+export function handshakeFailure(status, body) {
+  let code; try { const value = JSON.parse(body); code = typeof value?.error === 'string' ? value.error : value?.error?.code; } catch {}
+  if (status === 403 && ['DEVICE_NOT_PAIRED', 'DEVICE_DENIED', 'DEVICE_EXPIRED'].includes(code)) return code;
+  if (status === 403) return 'EDGE_FORBIDDEN';
+  if (status === 409 && code === 'DEVICE_BUSY') return 'DEVICE_BUSY';
+  if (status >= 300 && status < 400) return 'HANDSHAKE_REDIRECT';
+  if (status === 401) return 'HANDSHAKE_DENIED';
+  return 'SERVER_UNAVAILABLE';
+}
+export function closeFailure(code) {
+  return code === AGENT_CLOSE.REVOKED ? 'DEVICE_REVOKED' : code === AGENT_CLOSE.DEVICE_EXPIRED ? 'DEVICE_EXPIRED' : null;
+}
+export function agentFailureMessage(code) {
+  if (['DEVICE_REVOKED', 'DEVICE_NOT_PAIRED', 'DEVICE_DENIED', 'DEVICE_EXPIRED'].includes(code)) return `设备配对已解除、失效或被替换（${code}）。请运行 npm run browser-agent -- --pair 并在后台重新配对；浏览器登录资料保留。`;
+  if (code === 'DEVICE_BUSY') return '同一设备已有服务连接（DEVICE_BUSY）。请保留一个运行实例，再重启此服务。';
+  if (code === 'EDGE_FORBIDDEN') return 'Cloudflare 入口拒绝控制连接（HTTP 403 · EDGE_FORBIDDEN），不能据此判定设备已解除配对。请检查 Worker 入口与网络策略。';
+  if (['PAIRING_EXPIRED', 'PAIRING_BUSY'].includes(code)) return `配对未完成（${code}）。准备好后台后运行 npm run browser-agent -- --pair，使用新配对码。`;
+  if (['HANDSHAKE_REDIRECT', 'HANDSHAKE_DENIED'].includes(code)) return `控制连接未能鉴权（${code}），请检查 Worker 入口和路由配置。`;
+  if (code === 'AGENT_START_FAILED') return '浏览器服务未能启动（AGENT_START_FAILED）。请检查浏览器安装、独立 profile 是否被其他实例占用及系统依赖。首次安装命令为 npm run browser:install。';
+  return `浏览器服务未能继续（${code === 'INVALID_SERVER' ? code : 'SERVER_UNAVAILABLE'}），请检查服务地址和网络后重试。`;
+}
 export async function privateDirectory(directory) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   if (process.platform === 'win32') {
@@ -160,13 +182,20 @@ export async function runAgent() {
   try {
     let attempt = 0;
     while (!stopping && device.expiresAt > Date.now()) {
-      let fatal = false;
+      let failure = null;
       await new Promise((finished) => {
         socket = new WebSocket(`${origin.replace(/^http/, 'ws')}/api/browser-agent/connect`, { headers: { Authorization: `Bearer ${device.key}` }, maxPayload: 8192, followRedirects: false, handshakeTimeout: 15000 });
         let lastPong = Date.now();
         const timer = setInterval(() => { if (Date.now() - lastPong > 45000) socket.terminate(); else if (socket.readyState === WebSocket.OPEN) socket.send('ping'); }, 15000);
         socket.on('open', () => { attempt = 0; console.log('浏览器服务已连接。请在 /admin 打开实时窗口。'); });
-        socket.on('unexpected-response', (_request, response) => { fatal = response.statusCode === 403; response.resume(); socket.terminate(); });
+        socket.on('unexpected-response', (_request, response) => {
+          // Only known JSON device errors can establish a pairing failure.
+          // Never echo edge HTML, headers, credentials, or upstream messages.
+          let body = ''; let oversized = false;
+          response.on('data', (chunk) => { if (body.length + chunk.length <= 8192) body += chunk.toString(); else oversized = true; });
+          const rejected = () => { failure = handshakeFailure(response.statusCode, oversized ? '' : body); socket.terminate(); };
+          response.once('end', rejected); response.once('error', rejected);
+        });
         const connection = socket;
         socket.on('message', (bytes) => {
           const raw = bytes.toString(); if (raw === 'pong') { lastPong = Date.now(); return; }
@@ -192,20 +221,21 @@ export async function runAgent() {
           }).catch(() => { console.log('浏览器操作未完成，请在后台检查当前画面。'); }).finally(() => { queued--; });
         });
         socket.on('error', () => {});
-        socket.on('close', (code) => { clearInterval(timer); if (code === 4001) fatal = true; viewing = false; credit = false; void view(false); finished(); });
+        socket.on('close', (code) => { clearInterval(timer); failure = closeFailure(code) || failure; viewing = false; credit = false; void view(false); finished(); });
       });
-      if (fatal) throw new Error('DEVICE_REVOKED');
+      if (attentionCodes.has(failure)) throw new Error(failure);
       if (!stopping) { console.log('控制连接已断开，正在重连；不会重放浏览器操作。'); await sleep(Math.min(30000, 1000 * 2 ** Math.min(attempt++, 5))); }
     }
+    if (!stopping && device.expiresAt <= Date.now()) throw new Error('DEVICE_EXPIRED');
   } finally { await close(); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runAgent().catch((error) => {
-    const code = ['PAIRING_EXPIRED', 'PAIRING_BUSY', 'DEVICE_REVOKED', 'INVALID_SERVER', 'SERVER_UNAVAILABLE'].includes(error.message) ? error.message : 'AGENT_START_FAILED';
-    console.error(`浏览器服务未能继续（${code}）。首次运行请先 npm run browser:install；重新配对用 npm run browser-agent -- --pair。`);
+    const code = attentionCodes.has(error.message) || error.message === 'SERVER_UNAVAILABLE' ? error.message : 'AGENT_START_FAILED';
+    console.error(agentFailureMessage(code));
     // Service managers must not turn a required human action into an endless
     // sequence of pairing requests or rejected device handshakes.
-    process.exitCode = ['PAIRING_EXPIRED', 'PAIRING_BUSY', 'DEVICE_REVOKED', 'INVALID_SERVER', 'AGENT_START_FAILED'].includes(code) ? 78 : 1;
+    process.exitCode = attentionCodes.has(code) ? 78 : 1;
   });
 }

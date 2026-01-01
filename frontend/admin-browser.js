@@ -1,4 +1,4 @@
-import { VIEWPORT, validPairCode } from '../shared/browser-agent-protocol.js';
+import { VIEWPORT, validPairCode, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
 
 export function initBrowserAgent() {
   const el = (id) => document.getElementById(id);
@@ -49,8 +49,8 @@ export function initBrowserAgent() {
     finally { el('agent-approve').disabled = false; }
   });
   el('agent-revoke').addEventListener('click', async () => {
-    if (!confirm('撤销浏览器服务的远程连接权限？本地浏览器资料和现有账单会保留。')) return;
-    try { await api('revoke', {}); socket?.close(); notice('连接权限已撤销。'); await refresh(); } catch (error) { notice(error.message); }
+    if (!confirm('解除设备配对后，服务会停止连接，需重新输入配对码。仅关闭画面请使用“关闭实时窗口”。确定解除设备配对吗？')) return;
+    try { await api('revoke', {}); socket?.close(); notice('设备配对已解除。重新连接请运行 npm run browser-agent -- --pair；浏览器登录资料保留。'); await refresh(); } catch (error) { notice(error.message); }
   });
   el('agent-open').addEventListener('click', () => {
     if (!online || [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket?.readyState)) return;
@@ -80,7 +80,11 @@ export function initBrowserAgent() {
         notice(data.result.ok ? '本机浏览器已核对固定账户和 CNY。支付取码与到账尚待验证。' : `${messages[data.result.code] || '账户核验未完成。'}${data.result.httpStatus ? ` HTTP ${data.result.httpStatus}` : ''}`);
       }
     });
-    socket.addEventListener('close', () => { clearInterval(ping); if (connection !== socket) return; clearScreen(); notice('实时窗口已关闭。单次控制连接最多 10 分钟，可重新打开；浏览器登录保留。'); void refresh(); });
+    socket.addEventListener('close', (event) => {
+      clearInterval(ping); if (connection !== socket) return; clearScreen();
+      notice(event.code === AGENT_CLOSE.REVOKED ? '设备配对已解除或更换，请运行 npm run browser-agent -- --pair 后重新配对。' : event.code === AGENT_CLOSE.DEVICE_EXPIRED ? '设备授权已到期，请重新配对。' : event.code === AGENT_CLOSE.ACCESS_EXPIRED ? '控制窗口或 Access 会话已到期，请确认登录后重新打开窗口。' : '实时窗口已关闭，可重新打开；设备配对和浏览器登录保留。');
+      void refresh();
+    });
     socket.addEventListener('error', () => { notice('实时连接未建立。请确认 Access 有效、服务在线，且没有其他控制窗口。'); });
   });
   el('agent-close').addEventListener('click', () => { socket?.close(); el('agent-view').hidden = true; });

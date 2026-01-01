@@ -1,6 +1,7 @@
 export const VIEWPORT = Object.freeze({ width: 1024, height: 768 });
 export const MAX_FRAME_BYTES = 300000;
 export const AGENT_PROTOCOL = 1;
+export const AGENT_CLOSE = Object.freeze({ REPLACED: 4000, REVOKED: 4001, DEVICE_EXPIRED: 4002, SESSION_LOST: 4003, ACCESS_EXPIRED: 4004 });
 const keys = new Set(['Enter', 'Tab', 'Backspace', 'Delete', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown', 'ControlOrMeta+A']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const validCommandId = (id) => typeof id === 'string' && uuid.test(id);

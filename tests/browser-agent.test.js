@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { browserCommand, accountResult } from '../shared/browser-agent-protocol.js';
-import { serverOrigin, executeBrowserCommand } from '../scripts/browser-agent.mjs';
+import { browserCommand, accountResult, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
+import { serverOrigin, executeBrowserCommand, handshakeFailure, closeFailure, agentFailureMessage } from '../scripts/browser-agent.mjs';
+import { BrowserAgentRelay } from '../worker/browser-agent-relay.js';
 import worker from '../worker/index.js';
 const id = () => crypto.randomUUID();
 
@@ -49,4 +50,43 @@ test('browser-agent public enrollment refuses browser-origin requests and admin 
   assert.equal(response.status, 403);
   const admin = await worker.fetch(new Request('https://feedfish.example/api/admin/browser-agent/status'), {});
   assert.equal(admin.status, 503); assert.equal((await admin.json()).error.code, 'ACCESS_NOT_CONFIGURED');
+});
+
+test('agent handshake distinguishes a missing device binding from an unclassified edge 403', () => {
+  for (const code of ['DEVICE_NOT_PAIRED', 'DEVICE_DENIED', 'DEVICE_EXPIRED']) assert.equal(handshakeFailure(403, JSON.stringify({ error: code })), code);
+  for (const body of ['<html>private-cookie</html>', '{"error":"private-token"}', '{"error":{"message":"private-token"}}']) {
+    assert.equal(handshakeFailure(403, body), 'EDGE_FORBIDDEN');
+    assert.equal(agentFailureMessage(handshakeFailure(403, body)).includes('private'), false);
+  }
+  assert.equal(handshakeFailure(409, '{"error":"DEVICE_BUSY"}'), 'DEVICE_BUSY');
+  assert.equal(handshakeFailure(302, ''), 'HANDSHAKE_REDIRECT');
+  assert.equal(handshakeFailure(503, ''), 'SERVER_UNAVAILABLE');
+});
+
+test('repair guidance preserves the profile and does not suggest reinstalling for an unpaired device', () => {
+  for (const code of ['DEVICE_REVOKED', 'DEVICE_NOT_PAIRED', 'DEVICE_DENIED', 'DEVICE_EXPIRED']) {
+    const message = agentFailureMessage(code);
+    assert.ok(message.includes('npm run browser-agent -- --pair'));
+    assert.ok(message.includes('登录资料保留'));
+    assert.equal(message.includes('browser:install'), false);
+  }
+});
+
+test('only explicit revocation or device expiry is a fatal device close', () => {
+  assert.equal(closeFailure(AGENT_CLOSE.REVOKED), 'DEVICE_REVOKED');
+  assert.equal(closeFailure(AGENT_CLOSE.DEVICE_EXPIRED), 'DEVICE_EXPIRED');
+  for (const code of [1000, 1006, 1011, AGENT_CLOSE.REPLACED, AGENT_CLOSE.SESSION_LOST, AGENT_CLOSE.ACCESS_EXPIRED]) assert.equal(closeFailure(code), null);
+});
+
+test('relay window expiry and lost attachments cannot masquerade as device revocation', async () => {
+  for (const [attachment, expected] of [
+    [{ role: 'viewer', expiresAt: Date.now() - 1 }, AGENT_CLOSE.ACCESS_EXPIRED],
+    [{ role: 'agent', expiresAt: Date.now() - 1 }, AGENT_CLOSE.DEVICE_EXPIRED],
+    [null, AGENT_CLOSE.SESSION_LOST],
+  ]) {
+    let closed; const ws = { deserializeAttachment: () => attachment, close: (code) => { closed = code; } };
+    const relay = new BrowserAgentRelay({ getWebSockets: () => [ws] }, {});
+    assert.deepEqual(relay.live('agent'), []); assert.equal(closed, expected);
+    closed = undefined; await relay.webSocketMessage(ws, 'ping'); assert.equal(closed, expected);
+  }
 });

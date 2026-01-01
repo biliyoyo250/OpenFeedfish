@@ -134,9 +134,10 @@ test('loopback receiver enforces Host, Origin, state and one callback; forwards 
     });
     assert.equal(forgedHost, 403);
     assert.equal((await fetch(new URL('/start', local), { method: 'POST', headers: { Origin: 'https://evil.example' }, redirect: 'manual' })).status, 403);
-    const start = await fetch(new URL('/start', local), { method: 'POST', headers: { Origin: local.origin }, redirect: 'manual' });
-    assert.equal(start.status, 303);
-    const target = new URL(start.headers.get('location')); assert.equal(target.origin, 'https://feedfish.example'); assert.equal(target.search, '');
+    const start = await fetch(local);
+    const body = await start.text();
+    const link = body.match(/href="(https:\/\/feedfish\.example\/admin#[^"]+)"/)[1].replace(/&amp;/g, '&');
+    const target = new URL(link); assert.equal(target.origin, 'https://feedfish.example'); assert.equal(target.search, '');
     assert.equal(new URLSearchParams(target.hash.slice(1)).get('connect_state'), state);
     assert.equal((await fetch(new URL('/oauth/callback?state=wrong&code=code', local), { redirect: 'manual' })).status, 400);
     const callback = new URL('/oauth/callback', local); callback.searchParams.set('state', state); callback.searchParams.set('code', 'one-time-code');

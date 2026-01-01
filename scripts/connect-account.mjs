@@ -12,16 +12,16 @@ export async function createReceiver({ state = randomBytes(32).toString('base64u
   const server = createServer((request, response) => {
     const reply = (status, body = '', extra = {}) => { response.writeHead(status, { ...responseHeaders, 'Content-Type': 'text/html; charset=utf-8', ...extra }); response.end(body); };
     if (request.headers.host !== new URL(origin).host) return reply(403);
+    const requestOrigin = request.headers.origin;
+    if (requestOrigin && requestOrigin !== 'null' && requestOrigin !== origin && requestOrigin !== 'https://platform.deepseek.com') return reply(403);
     let url;
     try { url = new URL(request.url, origin); } catch { return reply(400); }
     if (url.origin !== origin) return reply(403);
     if (Date.now() >= expiresAt || consumed) return reply(410, '本次连接已结束。');
-    if (request.method === 'GET' && url.pathname === '/') return reply(200, '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连接固定账户</title><style>body{font:16px system-ui;max-width:520px;margin:12vh auto;padding:24px;line-height:1.7}button{font:inherit;padding:12px 24px;border:0;border-radius:24px;background:#315da8;color:white}</style><h1>连接固定账户</h1><p>本机接收器只转交一次授权码，不读取 Cookie，不接触账户令牌。账户核验与令牌保存由 Cloudflare 完成。</p><form method="post" action="/start"><button>前往受保护的管理后台</button></form>');
-    if (request.method === 'POST' && url.pathname === '/start') {
-      request.resume();
-      if (request.headers.origin !== origin) return reply(403);
+    if (request.method === 'GET' && url.pathname === '/') {
       const fragment = new URLSearchParams({ connect_port: new URL(origin).port, connect_state: state });
-      return reply(303, '', { Location: `${adminOrigin}/admin#${fragment}` });
+      const link = `${adminOrigin}/admin#${fragment}`.replace(/&/g, '&amp;');
+      return reply(200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连接固定账户</title><style>body{font:16px system-ui;max-width:520px;margin:12vh auto;padding:24px;line-height:1.7}a{display:inline-block;font:inherit;padding:12px 24px;border:0;border-radius:24px;background:#315da8;color:white;text-decoration:none}</style><h1>连接固定账户</h1><p>本机接收器只转交一次授权码，不读取 Cookie，不接触账户令牌。账户核验与令牌保存由 Cloudflare 完成。</p><a href="${link}">前往受保护的管理后台</a>`);
     }
     if (request.method === 'GET' && url.pathname === '/oauth/callback') {
       const receivedState = url.searchParams.get('state') || '';

@@ -1,56 +1,83 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="给大肥鱼加点餐。通过微信或支付宝，为我的 DeepSeek API 账户充一点能量。">
-  <meta name="theme-color" content="#f7f9f8"><title>Feedfish · 给小鱼加点餐</title>
-  <link rel="icon" href="/fish.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="为固定 DeepSeek 账户充值。">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fbfaff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121318" media="(prefers-color-scheme: dark)">
+  <title>喂鱼</title>
+  <link rel="icon" href="/assets/DSniang1.png" type="image/png">
+  <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <header class="site-header"><a class="brand" href="/" aria-label="Feedfish 首页"><img src="/fish.svg" width="34" height="34" alt=""><span>feedfish<span class="brand-dot">.</span></span></a><span class="header-note">一点心意，一点能量 <span aria-hidden="true">↗</span></span></header>
-  <main class="layout">
-    <section class="intro" aria-labelledby="intro-title">
-      <span class="eyebrow"><span class="tiny-dot"></span> A LITTLE SUPPORT, A BIG THANK YOU</span>
-      <h1 id="intro-title">给我的大肥鱼，<br><span>加点餐。</span></h1>
-      <p class="lead">如果我的分享帮到了你，<br>可以请这条小鱼吃点好的。</p>
-      <div class="fish-scene" aria-hidden="true">
-        <svg viewBox="0 0 400 250" fill="none"><path d="M36 206c53-12 101 12 151 0s103-13 177 0" stroke="#d7e4df" stroke-width="2"/><ellipse cx="204" cy="208" rx="96" ry="8" fill="#e7eeea"/><circle cx="325" cy="71" r="12" stroke="#bdd7d0" stroke-width="2"/><circle cx="340" cy="40" r="5" fill="#d8e8e1"/><path d="m89 131-49-35 8 73 41-16" fill="#bee4d7" stroke="#234c47" stroke-width="3" stroke-linejoin="round"/><path d="M107 95c9-27 28-41 63-33l24 33" fill="#7dbdaa" stroke="#234c47" stroke-width="3"/><path d="M90 111c21-30 76-44 123-29 46 14 83 48 81 68-3 24-51 38-98 37-62-1-110-25-111-49 0-9 1-17 5-27Z" fill="#bfe5d5" stroke="#234c47" stroke-width="3"/><path d="M162 130c-15 12-18 26-8 37 16-1 24-11 25-25" fill="#8bc5b1" stroke="#234c47" stroke-width="3" stroke-linejoin="round"/><path d="M235 113c-7 17-7 42 2 55" stroke="#7aaf9e" stroke-width="2"/><circle cx="261" cy="131" r="5" fill="#173c36"/><circle cx="263" cy="129" r="1.5" fill="white"/><path d="M285 152c5 3 10 1 12-2" stroke="#234c47" stroke-width="3" stroke-linecap="round"/><path d="m118 110 6-4m14 0 6-4m-14 20 6-4" stroke="#91bcab" stroke-width="3" stroke-linecap="round"/><path d="m307 184 6-3m-5 16 5 3" stroke="#c8d7d0" stroke-width="2" stroke-linecap="round"/></svg>
-        <span class="fish-caption">今日心情：等投喂 <span>◡</span></span>
+  <main class="page">
+    <div id="hero" class="hero">
+      <div class="character-controls">
+        <button id="fish-button" class="character-button" type="button" aria-label="和小鱼打个招呼">
+          <img id="fish-image" src="/assets/DSniang1.png" width="120" height="120" alt="" draggable="false">
+        </button>
+        <button id="sound-toggle" class="icon-button" type="button" aria-label="静音" aria-pressed="false">
+          <svg class="sound-on" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5Z"/><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>
+          <svg class="sound-off" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5Zm5 4 6 6m0-6-6 6"/></svg>
+        </button>
       </div>
-      <div class="recipient"><span class="avatar">Y</span><div><strong>给 yoyo 的一点支持</strong><span>用来探索、创作，和保持好奇。</span></div></div>
-      <div class="purpose"><span aria-hidden="true">↳</span><p>你的心意将直接充入<strong>我的 DeepSeek API 账户</strong>，支持后续创作。这是个人赞助，不会充值到付款人的账户。</p></div>
-    </section>
-    <section class="checkout" aria-labelledby="form-title">
-      <div class="section-heading"><div><span class="section-kicker">FEED THE FISH</span><h2 id="form-title">留下一点心意</h2></div><span class="currency-badge">CNY 人民币</span></div>
-      <p id="demo-notice" class="notice" hidden>本地演示 · 不会发起真实付款</p>
-      <p id="config-error" class="error" role="alert" hidden></p>
-      <form id="sponsor-form" novalidate>
-        <label class="field-label" for="amount">投喂金额</label>
-        <div class="amount-wrap"><span class="yen" aria-hidden="true">¥</span><input id="amount" name="amount" type="text" inputmode="decimal" autocomplete="off" value="10.00" aria-describedby="amount-help" required><span>CNY</span></div>
-        <div class="presets" aria-label="选择充值金额"><button type="button" data-amount="10.00" aria-pressed="true">¥10</button><button type="button" data-amount="20.00" aria-pressed="false">¥20</button><button type="button" data-amount="50.00" aria-pressed="false">¥50</button><button type="button" data-amount="100.00" aria-pressed="false">¥100</button></div>
-        <p class="hint" id="amount-help">多少都是心意。支持 1–100000 CNY，仅限整数元。</p>
-        <div class="form-row"><label class="field-label" for="nickname">你的昵称 <span>选填</span></label><input id="nickname" name="nickname" maxlength="40" autocomplete="nickname" placeholder="怎么称呼你？"></div>
-        <div class="form-row"><label class="field-label" for="message">想说的话 <span>选填</span></label><textarea id="message" name="message" maxlength="300" rows="2" placeholder="给小鱼留句话吧…"></textarea><div class="message-meta"><span><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="7" width="8" height="6" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>昵称与留言仅收款人可见</span><span id="message-count">0 / 300</span></div></div>
-        <fieldset><legend class="field-label">选择支付方式</legend><div class="payment-options"><label class="payment-pill"><input type="radio" name="paymentMethod" value="wechat" checked><span class="pay-icon wechat" aria-hidden="true">●</span><span>微信支付</span><span class="radio-mark"></span></label><label class="payment-pill"><input type="radio" name="paymentMethod" value="alipay"><span class="pay-icon alipay" aria-hidden="true">支</span><span>支付宝</span><span class="radio-mark"></span></label></div></fieldset>
-        <div id="turnstile"></div><p class="error" id="form-error" role="alert" hidden></p>
-        <button class="primary-button" id="submit-button" type="submit" disabled><span id="submit-label">生成付款码</span><span aria-hidden="true">→</span></button>
-        <p class="checkout-note">扫码付款，心意即刻出发。<br><span>请确认赞助金额后再支付。</span></p>
-      </form>
-      <section id="payment-view" hidden aria-live="polite" aria-labelledby="payment-title">
-        <div class="payment-topline"><span id="order-method"></span><span class="status-chip" id="order-status">等待付款</span></div>
-        <h3 id="payment-title">给小鱼的加餐，准备好啦</h3><p class="payment-amount"><span id="order-amount"></span><small>CNY</small></p>
-        <div class="qr-frame" id="qr-frame"><canvas id="qr-canvas" aria-label="付款二维码" role="img"></canvas><div id="qr-overlay" hidden><span id="result-icon">✓</span></div></div>
-        <p class="payment-instruction" id="payment-instruction"></p><p class="timer" id="countdown"></p>
-        <p id="poll-error" class="error" role="status" hidden></p>
+      <h1>喂鱼</h1>
+      <p id="fish-status" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+
+    <p id="demo-notice" class="notice" hidden>本地演示 · 不会发起真实付款</p>
+    <p id="config-error" class="error" role="alert" hidden></p>
+
+    <form id="sponsor-form" novalidate>
+      <div class="amount-field">
+        <label for="amount">金额</label>
+        <div class="amount-row"><input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off" value="10" aria-describedby="amount-help" required><span class="currency">CNY</span></div>
+      </div>
+      <p id="amount-help" class="sr-only">支持 1 至 100000 CNY，仅限整数元。</p>
+
+      <fieldset class="payment-field">
+        <legend class="sr-only">支付方式</legend>
+        <div class="payment-options">
+          <label class="payment-pill"><input type="radio" name="paymentMethod" value="wechat" checked><img class="pay-icon wechat-icon" src="/assets/wechat.svg" width="20" height="20" alt=""><span>微信支付</span><svg class="selection-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg></label>
+          <label class="payment-pill"><input type="radio" name="paymentMethod" value="alipay"><img class="pay-icon alipay-icon" src="/assets/alipay.svg" width="20" height="20" alt=""><span>支付宝</span><svg class="selection-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg></label>
+        </div>
+      </fieldset>
+
+      <details class="optional-fields">
+        <summary><span>昵称与留言<span class="optional-label">（选填）</span></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5"/></svg></summary>
+        <div class="optional-content">
+          <div class="outlined-field"><label for="nickname">昵称</label><input id="nickname" name="nickname" maxlength="40" autocomplete="nickname"></div>
+          <div class="outlined-field"><label for="message">留言</label><textarea id="message" name="message" maxlength="300" rows="3"></textarea></div>
+          <span id="message-count" class="sr-only">0 / 300</span>
+        </div>
+      </details>
+
+      <div id="turnstile"></div>
+      <p id="form-error" class="error" role="alert" hidden></p>
+      <button class="primary-button" id="submit-button" type="submit" disabled><span id="submit-label">生成付款码</span></button>
+      <p class="purpose-note">款项用于固定 DeepSeek 账户充值。</p>
+    </form>
+
+    <section id="payment-view" hidden aria-live="polite" aria-labelledby="payment-title">
+      <div class="payment-topline"><span id="order-method"></span><span class="status-chip" id="order-status">等待付款</span></div>
+      <h2 id="payment-title">扫码付款</h2>
+      <p class="payment-amount"><span id="order-amount"></span><small>CNY</small></p>
+      <img id="success-animation" class="success-animation" width="160" height="160" alt="" hidden>
+      <div class="qr-frame" id="qr-frame"><canvas id="qr-canvas" aria-label="付款二维码" role="img"></canvas><div id="qr-overlay" hidden><span id="result-icon">✓</span></div></div>
+      <p class="payment-instruction" id="payment-instruction"></p>
+      <p class="timer" id="countdown"></p>
+      <p id="poll-error" class="error" role="status" hidden></p>
+      <div class="payment-actions">
         <a id="payment-link" class="secondary-button" target="_blank" rel="noopener noreferrer" hidden>打开支付宝付款页</a>
-        <button id="check-payment" type="button" class="secondary-button">我已付款，查看结果</button>
+        <button id="check-payment" type="button" class="secondary-button">查看付款结果</button>
         <button id="demo-pay" type="button" class="secondary-button" hidden>模拟支付成功</button>
-        <button id="start-again" type="button" class="text-button">返回修改</button><p class="payment-footnote">付款状态由订单查询确认，请保留此页面。</p>
-      </section>
+        <button id="start-again" type="button" class="text-button">返回修改</button>
+      </div>
     </section>
   </main>
-  <footer><span>每一份支持，我都好好收下。</span><span>feedfish · Made with a little love <span aria-hidden="true">♡</span></span></footer>
-  <noscript><p class="noscript">请启用 JavaScript 后生成付款二维码。</p></noscript>
+  <noscript><p class="noscript">请启用 JavaScript 后继续。</p></noscript>
 </body>
 </html>

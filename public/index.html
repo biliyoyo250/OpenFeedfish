@@ -66,8 +66,8 @@
       <h2 id="payment-title">扫码付款</h2>
       <p class="payment-amount"><span id="order-amount"></span><small>CNY</small></p>
       <img id="success-animation" class="success-animation" width="160" height="160" alt="" hidden>
-      <div class="qr-frame" id="qr-frame"><canvas id="qr-canvas" aria-label="付款二维码" role="img"></canvas><div id="qr-overlay" hidden><span id="result-icon">✓</span></div></div>
-      <p class="payment-instruction" id="payment-instruction"></p>
+      <div class="qr-frame" id="qr-frame"><img id="qr-image" width="210" height="210" alt="付款二维码" hidden><div id="qr-overlay" hidden><span id="result-icon">✓</span></div></div>
+      <p class="payment-instruction"><span id="payment-instruction"></span> <a id="qr-download" class="qr-download" download="feedfish-qr.png" hidden>保存二维码</a></p>
       <p class="timer" id="countdown"></p>
       <p id="poll-error" class="error" role="status" hidden></p>
       <div class="payment-actions">

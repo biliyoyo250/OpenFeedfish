@@ -100,11 +100,12 @@ h2 { font-size: 20px; line-height: 1.5; font-weight: 450; margin: 24px 0 10px; }
 .payment-amount { font-size: 32px; line-height: 1.4; font-weight: 400; margin: 0 0 24px; font-variant-numeric: tabular-nums; }
 .payment-amount small { font-size: 12px; margin-left: 9px; color: var(--on-surface-variant); }
 .qr-frame { position: relative; display: grid; place-items: center; width: 234px; height: 234px; max-width: 100%; margin: 0 auto; overflow: hidden; border: 1px solid var(--outline-variant); border-radius: 18px; background: #fff; }
-#qr-canvas { display: block; max-width: 100%; width: 210px !important; height: auto !important; }
+#qr-image { display: block; max-width: 100%; width: 210px; height: auto; }
 #qr-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: var(--surface); color: var(--primary); }
 #result-icon { font-size: 48px; font-weight: 400; }
 .success-animation { display: block; width: 160px; height: 160px; object-fit: contain; margin: 20px auto; }
 .payment-instruction { font-size: 13px; line-height: 1.8; color: var(--on-surface-variant); margin: 20px 0 4px; overflow-wrap: anywhere; }
+.qr-download { margin-inline-start: .5em; color: var(--primary); text-underline-offset: .18em; }
 .timer { font-size: 11px; line-height: 20px; min-height: 20px; color: var(--on-surface-variant); margin: 6px 0 22px; font-variant-numeric: tabular-nums; }
 .payment-actions { display: grid; gap: 12px; }
 .return-merchant, .manual-check-status { margin: 0; padding: 6px 8px; color: var(--on-surface-variant); font-size: 12px; line-height: 1.6; }

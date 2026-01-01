@@ -1,27 +1,16 @@
 import { accountErrorMessage } from './admin-errors.js';
 import { beginLocalAuthorization } from './admin-connection.js';
 import { initBrowserAgent } from './admin-browser.js';
-import QRCode from 'qrcode';
 const element = (id) => document.getElementById(id);
 const fields = element('session-fields');
 const form = element('session-form');
 const refreshButton = element('refresh-button');
-const checkButton = element('check-button');
-const browserCheckButton = element('browser-check-button');
-const providerCheckButton = element('provider-check-button');
-const challengeStart = element('challenge-start');
-const challengeComplete = element('challenge-complete');
-const challengeCancel = element('challenge-cancel');
-let challengeSession = null;
-let challengeTimer;
-const disableButton = element('disable-button');
+const retryButton = element('retry-button');
 const importButton = element('import-button');
 const loginStart = element('login-start');
 const loginCancel = element('login-cancel');
 let session = null;
 let busy = false;
-const testButtons = [...document.querySelectorAll('[data-test-method]')];
-const testRequests = new Map();
 const connectionInput = (() => {
   const values = new URLSearchParams(window.location.hash.slice(1));
   if (![...values.keys()].some((key) => key.startsWith('connect_'))) return null;
@@ -34,12 +23,6 @@ const connectionInput = (() => {
   return Number.isInteger(callbackPort) && callbackPort >= 1024 && callbackPort <= 65535 ? { callbackPort, state } : { invalid: true };
 })();
 
-const accountStates = {
-  connected: ['身份已确认', 'positive', '固定账户身份已核对。收款仍需通过支付通道验证并启用。'],
-  disabled: ['新订单已停止', 'neutral', '已停止接受新的赞助，已有账单仍由后端继续核对。'],
-  unverified: ['待验证', 'warning', '已有会话，但连接尚未验证。请验证连接或更新登录会话。'],
-  not_configured: ['未配置', 'neutral', '还没有可用的登录会话，请在下方导入。'],
-};
 const orderStates = {
   waiting: ['等待付款', 'warning'], processing: ['平台处理中', 'warning'],
   pending: ['等待付款', 'warning'], created: ['等待付款', 'warning'],
@@ -69,8 +52,6 @@ function dateLabel(value) {
 
 function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
-  const legacyPayments = session?.legacyPaymentTestingAvailable === true;
-  element('legacy-payment-tests').hidden = !legacyPayments;
   fields.disabled = !writable || Boolean(session?.pendingAuthorization);
   importButton.disabled = fields.disabled;
   const authorizationReady = writable && session.authorizationAvailable;
@@ -83,24 +64,8 @@ function updateControls() {
   loginCancel.textContent = pending ? '清除暂存凭证' : '取消授权';
   loginCancel.disabled = !authorizationReady || Boolean(pending?.busy);
   refreshButton.disabled = !writable;
-  checkButton.disabled = !writable || Boolean(pending?.busy) || !(pending || session?.account?.configured || session?.account?.status === 'disabled');
-  checkButton.textContent = pending ? '重试账户核验' : '验证连接';
-  browserCheckButton.disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured;
-  providerCheckButton.disabled = !legacyPayments || !writable || Boolean(pending) || !(session?.account?.configured || session?.account?.status === 'disabled');
-  element('provider-check-id').disabled = providerCheckButton.disabled;
-  challengeStart.disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured;
-  const challengeLive = Boolean(challengeSession && Date.parse(challengeSession.expiresAt) > Date.now());
-  challengeComplete.hidden = !challengeSession; challengeCancel.hidden = !challengeSession;
-  challengeComplete.disabled = challengeStart.disabled || !challengeLive;
-  challengeCancel.disabled = !writable;
-  element('challenge-view').hidden = !challengeLive;
-  element('browser-payment-mode').disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured;
-  disableButton.disabled = !writable || !session?.account?.configured || session.account.status === 'disabled';
-  for (const button of testButtons) button.disabled = !legacyPayments || !writable || Boolean(pending) || !session?.account?.configured || !session.expectedAccountId;
-  if (challengeLive) {
-    browserCheckButton.disabled = true; providerCheckButton.disabled = true; element('provider-check-id').disabled = true;
-    for (const button of testButtons) button.disabled = true;
-  }
+  retryButton.hidden = !pending;
+  retryButton.disabled = !writable || Boolean(pending?.busy);
 }
 
 function lockAccess() {
@@ -110,12 +75,6 @@ function lockAccess() {
   element('access-state').textContent = '权限未就绪';
   element('access-error').textContent = '管理入口的 SSO 登录或访问权限尚未就绪。请通过 Cloudflare Access 登录后重新加载此页面，或联系管理员检查访问策略。';
   element('access-error').hidden = false;
-  element('account-status').textContent = '未验证身份';
-  element('account-status').className = 'status-badge neutral';
-  element('account-description').textContent = '确认管理权限后才能查看和维护收款账户。';
-  element('expected-account-id').textContent = '—';
-  element('updated-at').textContent = '—';
-  element('last-checked').textContent = '—';
   element('admin-identity').textContent = 'Cloudflare Access · 管理入口';
   element('orders-body').replaceChildren();
   element('orders-container').hidden = true;
@@ -169,15 +128,6 @@ function renderSession(data) {
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
   element('admin-identity').textContent = data.demo ? '本地后台演示' : `管理员：${data.email || '已验证身份'}`;
-  const staged = !data.expectedAccountId && data.account.accountId && !data.demo;
-  const state = data.pendingAuthorization ? ['待核验', 'warning', '会话凭证已加密暂存，账户资料尚未核验。可重试核验或清除暂存。'] : staged ? ['待固定账户', 'warning', '账户身份已确认，凭证已加密保存。固定此账户 ID 后仍需验证支付通道；收款保持关闭。'] : accountStates[data.account.status] || accountStates.unverified;
-  element('account-status').textContent = state[0];
-  element('account-status').className = `status-badge ${state[1]}`;
-  element('account-description').textContent = data.demo ? '以下为本地演示信息，不代表真实 DeepSeek 账户连接状态。' : state[2];
-  element('expected-account-id').textContent = data.expectedAccountId || data.account.accountId || '尚未导入';
-  element('account-id-warning').hidden = Boolean(data.expectedAccountId) || data.demo;
-  element('updated-at').textContent = dateLabel(data.account.updatedAt);
-  element('last-checked').textContent = dateLabel(data.account.lastCheckedAt);
   updateControls();
 }
 
@@ -327,101 +277,8 @@ loginCancel.addEventListener('click', () => {
   if (!loginCancel.disabled && session?.authorization) void mutate('/api/admin/account/authorize/cancel', {}, '本次授权已取消。');
 });
 
-checkButton.addEventListener('click', () => {
-  if (!checkButton.disabled && session?.pendingAuthorization) { void mutate('/api/admin/account/authorize/retry', { id: session.pendingAuthorization.id }, '会话已验证并加密保存。', true); return; }
-  if (!checkButton.disabled) void mutate('/api/admin/account/check', {}, '连接验证已完成，账户状态已更新。');
-});
-browserCheckButton.addEventListener('click', () => {
-  if (!browserCheckButton.disabled) void mutate('/api/admin/account/check', { transport: 'browser', paymentContext: true }, 'Cloudflare 云浏览器已核验固定账户、取得官网设备信息，并完成官方静默验证。未创建付款账单。');
-});
-challengeStart.addEventListener('click', async () => {
-  if (challengeStart.disabled || busy) return;
-  busy = true; updateControls(); setNotice('正在准备官方验证码窗口…');
-  try {
-    const result = await request('/api/admin/account/payment-challenge/start', {});
-    const url = new URL(result.viewPath, location.origin);
-    if (url.origin !== location.origin || url.pathname !== '/api/admin/account/payment-challenge/view' || !Number.isFinite(Date.parse(result.expiresAt))) throw new Error('验证窗口地址无效。');
-    challengeSession = result; element('challenge-view').href = url.href;
-    clearTimeout(challengeTimer);
-    challengeTimer = setTimeout(() => { updateControls(); element('challenge-state').textContent = '验证窗口已到期，请重新准备。'; }, Math.max(1, Date.parse(result.expiresAt) - Date.now()));
-    element('challenge-state').hidden = false;
-    element('challenge-state').textContent = `请打开验证窗口并手动完成验证码，有效至 ${dateLabel(result.expiresAt)}。`;
-    setNotice('官方验证码窗口已准备好，请点击“打开验证窗口”。');
-  } catch (error) {
-    const stages = { browser_limits: '资源检查', browser_acquire: '创建浏览器', browser_connect: '连接浏览器', browser_context: '初始化窗口', browser_navigate: '打开官方页', browser_prepare: '准备验证码', browser_view: '生成查看入口', browser_persist: '保存临时会话' };
-    const stage = stages[error.diagnostic?.stage];
-    const status = Number.isInteger(error.diagnostic?.cloudflareStatus) ? ` · HTTP ${error.diagnostic.cloudflareStatus}` : '';
-    setNotice(`${error.message}${stage ? `（${stage}${status} · ${error.code}）` : ''}`, true);
-  }
-  finally { busy = false; updateControls(); }
-});
-challengeCancel.addEventListener('click', async () => {
-  if (challengeCancel.disabled || !challengeSession || busy) return;
-  busy = true; updateControls();
-  try { await request('/api/admin/account/payment-challenge/cancel', { id: challengeSession.id }); challengeSession = null; clearTimeout(challengeTimer); element('challenge-state').hidden = true; setNotice('官方验证窗口已关闭。'); }
-  catch (error) { setNotice(error.message, true); }
-  finally { busy = false; updateControls(); }
-});
-challengeComplete.addEventListener('click', async () => {
-  if (challengeComplete.disabled || !challengeSession || busy) return;
-  busy = true; updateControls(); setNotice('正在核对验证结果并生成 1 CNY 微信测试码…');
-  try {
-    const order = await request('/api/admin/account/payment-challenge/complete', { id: challengeSession.id });
-    challengeSession = null; clearTimeout(challengeTimer); element('challenge-state').hidden = true;
-    await showTestOrder(order, 'wechat'); await loadOrders(); setNotice('微信测试码已生成，请核对金额。');
-  } catch (error) {
-    if (!['LOGIN_PENDING', 'LOGIN_BUSY'].includes(error.code)) { challengeSession = null; clearTimeout(challengeTimer); }
-    const status = Number.isInteger(error.diagnostic?.upstreamStatus) ? `（HTTP ${error.diagnostic.upstreamStatus}）` : '';
-    setNotice(`${error.message}${status}`, true); await loadOrders();
-  }
-  finally { busy = false; updateControls(); }
-});
-providerCheckButton.addEventListener('click', async () => {
-  if (providerCheckButton.disabled || busy) return;
-  const providerOrderId = element('provider-check-id').value.trim();
-  if (!/^[A-Za-z0-9_-]{6,200}$/.test(providerOrderId)) { setNotice('请输入有效的 DeepSeek 订单号。', true); return; }
-  busy = true; updateControls(); setNotice('正在查询已有官网订单…');
-  try {
-    const result = await request('/api/admin/account/check-payment', { providerOrderId, transport: 'browser' });
-    setNotice(`官网订单状态：${result.providerStatus}。未创建新账单。`);
-  } catch (error) {
-    const status = Number.isInteger(error.diagnostic?.upstreamStatus) ? `（HTTP ${error.diagnostic.upstreamStatus}）` : '';
-    setNotice(`官网订单查询未完成。${error.message}${status}${error.diagnostic?.upstreamChallenge ? ' 上游要求浏览器验证。' : ''}`, true);
-  } finally { busy = false; updateControls(); }
-});
-
-async function showTestOrder(order, method) {
-  if (!order.qrCode) throw new Error('这笔测试账单已关闭，请核对最近账单。');
-  element('payment-test-qr').src = await QRCode.toDataURL(order.qrCode, { width: 440, margin: 3, errorCorrectionLevel: 'M' });
-  element('payment-test-description').textContent = `1.00 CNY · ${method === 'wechat' ? '微信支付' : '支付宝'} · 有效至 ${dateLabel(order.expiresAt)}`;
-  element('payment-test-link').hidden = !order.paymentUrl;
-  if (order.paymentUrl) element('payment-test-link').href = order.paymentUrl;
-  element('payment-test-result').hidden = false;
-}
-for (const button of testButtons) button.addEventListener('click', async () => {
-  if (button.disabled || busy) return;
-  const method = button.dataset.testMethod;
-  const transport = element('browser-payment-mode').checked ? 'browser' : undefined;
-  const testKey = `${method}:${transport || 'worker'}`;
-  if (!testRequests.has(testKey)) testRequests.set(testKey, crypto.randomUUID());
-  busy = true; updateControls(); setNotice('正在创建 1 CNY 测试账单…');
-  element('payment-test-result').hidden = true;
-  try {
-    const order = await request('/api/admin/account/test-payment', { paymentMethod: method, requestId: testRequests.get(testKey), ...(transport ? { transport } : {}) });
-    await showTestOrder(order, method);
-    await loadOrders(); setNotice('测试码已生成，请核对支付方式与金额。');
-  } catch (error) {
-    const status = Number.isInteger(error.diagnostic?.upstreamStatus) ? `（HTTP ${error.diagnostic.upstreamStatus}）` : '';
-    const challenge = ['captcha', 'challenge'].includes(error.diagnostic?.upstreamChallenge) ? ' 上游要求浏览器验证。' : '';
-    if (error.diagnostic?.upstreamChallenge === 'captcha') element('payment-challenge-panel').open = true;
-    setNotice(`测试码未生成。${error.message}${status}${challenge}`, true);
-    await loadOrders();
-  } finally { busy = false; updateControls(); }
-});
-disableButton.addEventListener('click', () => {
-  if (!disableButton.disabled && window.confirm('确定停止创建新的赞助订单吗？已有账单仍会继续核对最终结果。')) {
-    void mutate('/api/admin/account/disable', {}, '已停止新订单，已有账单仍会继续核对。');
-  }
+retryButton.addEventListener('click', () => {
+  if (!retryButton.disabled && session?.pendingAuthorization) void mutate('/api/admin/account/authorize/retry', { id: session.pendingAuthorization.id }, '会话已验证并加密保存。', true);
 });
 refreshButton.addEventListener('click', async () => {
   if (refreshButton.disabled) return;
@@ -430,7 +287,7 @@ refreshButton.addEventListener('click', async () => {
   setNotice('');
   try {
     const ordersLoaded = await refresh();
-    setNotice(ordersLoaded ? '账户状态与赞助记录已刷新。' : '账户状态已刷新，赞助记录暂未加载。');
+    setNotice(ordersLoaded ? '账单已刷新。' : '账单暂未加载，请稍后重试。');
   } catch (error) {
     setNotice(error.message, true);
   } finally {
@@ -463,8 +320,6 @@ refresh().then(async () => {
   element('orders-loading').hidden = true;
   if (element('access-error').hidden) {
     element('access-state').textContent = '暂未连接';
-    element('account-status').textContent = '加载未完成';
-    element('account-description').textContent = '账户状态未能加载，请检查网络与管理入口配置后重新加载页面。';
     setNotice(error.message, true);
   }
 });

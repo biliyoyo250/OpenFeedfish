@@ -91,7 +91,13 @@ export async function handleAdmin(request, env) {
       return paymentFailure(env, identity, checking ? 'payment_check_failed' : 'payment_test_failed', error);
     }
   }
-  if (path === '/api/admin/account/authorize/start') return json(await startAuthorization(env, identity, body));
+  if (path === '/api/admin/account/authorize/start') {
+    try { return json(await startAuthorization(env, identity, body)); }
+    catch (error) {
+      if (!(error instanceof ApiError) || !error.authorizationDiagnostic) throw error;
+      return json({ error: { code: error.code, message: error.message, diagnostic: error.authorizationDiagnostic } }, error.status);
+    }
+  }
   if (path === '/api/admin/account/authorize/complete' || path === '/api/admin/account/authorize/retry') {
     try {
       const saveSession = (credentials, pendingId) => importSession(env, credentials, identity.email, Date.now(), fetch, pendingId);

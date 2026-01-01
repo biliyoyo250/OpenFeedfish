@@ -53,8 +53,12 @@
     </section>
 
     <section class="panel session-panel" aria-labelledby="session-title">
-      <div class="panel-heading"><h2 id="session-title">导入网页登录 Token</h2><a class="official-link" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">DeepSeek 官网 <span aria-hidden="true">↗</span></a></div>
-      <p class="section-description">导入 DeepSeek 官网的 userToken，由 Cloudflare 核验固定账户并加密保存。</p>
+      <div class="panel-heading"><h2 id="session-title">连接 DeepSeek 账户</h2><a class="official-link" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">DeepSeek 官网 <span aria-hidden="true">↗</span></a></div>
+      <p class="section-description">在本机运行 <code>npm run connect-account</code>，打开显示的本机地址，点击“连接 DeepSeek”。官方授权完成后自动返回，凭证由 Cloudflare 加密保存。</p>
+      <div class="login-actions"><button id="login-start" class="button primary" type="button" disabled>等待本机连接</button><button id="login-cancel" class="button subtle" type="button" hidden>清除暂存凭证</button></div>
+      <p id="login-state" class="field-help" role="status">本机仅接收一次性授权码，无需复制 Cookie 或 Token。</p>
+      <p class="small muted">也可<a href="/admin/receiver.mjs">下载独立助手</a>后使用 Node.js 运行。</p>
+      <details class="manual-session"><summary>手动导入 userToken（备用）</summary>
       <form id="session-form" autocomplete="off">
         <fieldset id="session-fields" disabled>
           <legend class="visually-hidden">导入 DeepSeek 登录会话</legend>
@@ -70,10 +74,8 @@
           <div class="form-bottom"><p class="small muted">核验受阻时加密暂存两小时，可直接重试。</p><button id="import-button" class="button primary" type="submit" disabled>导入并核验</button></div>
         </fieldset>
       </form>
-      <p id="login-state" class="field-help" role="status">凭证仅由 Cloudflare 接收、核验并加密保存。</p>
-      <button id="login-cancel" class="button subtle" type="button" hidden>清除暂存凭证</button>
       <details class="manual-session"><summary>从哪里复制？</summary><p class="field-help">在已登录的 DeepSeek 充值页按 F12，打开 Application → Local Storage → https://platform.deepseek.com，复制 userToken 的完整值（可直接复制 JSON）。也可从 Network 中 users/current 请求的 Request Headers 复制 Authorization。只粘贴在本页，不要发到聊天；无需反复复制刷新后变化的 Cookie。</p></details>
-      <details class="manual-session"><summary>Harness 授权（备用）</summary><p class="field-help">在可信设备的项目目录运行 <code>npm run connect-account</code>，打开显示的本机链接，再使用已登录浏览器授权。官方页面标注 DeepSeek Harness；也可<a href="/admin/receiver.mjs">下载独立助手</a>后使用 Node.js 运行。</p><button id="login-start" class="button" type="button" disabled>前往 DeepSeek 授权</button></details>
+      </details>
     </section>
 
     <section class="panel orders-panel" aria-labelledby="orders-title">

@@ -1,4 +1,5 @@
 import { accountErrorMessage } from './admin-errors.js';
+import { beginLocalAuthorization } from './admin-connection.js';
 import QRCode from 'qrcode';
 const element = (id) => document.getElementById(id);
 const fields = element('session-fields');
@@ -72,7 +73,9 @@ function updateControls() {
   const authorizationReady = writable && session.authorizationAvailable;
   const activeLogin = Boolean(session?.authorization && Date.parse(session.authorization.expiresAt) > Date.now());
   const pending = session?.pendingAuthorization;
-  loginStart.disabled = !authorizationReady || !activeLogin || Boolean(pending);
+  const localStart = Boolean(connectionInput?.callbackPort && !connectionInput.invalid && !connectionInput.code && !connectionInput.denied);
+  loginStart.disabled = !authorizationReady || Boolean(pending?.busy) || !(localStart || (activeLogin && !pending));
+  loginStart.textContent = localStart && pending ? '改用官方授权' : localStart || activeLogin ? '前往 DeepSeek 授权' : '等待本机连接';
   loginCancel.hidden = !activeLogin && !pending;
   loginCancel.textContent = pending ? '清除暂存凭证' : '取消授权';
   loginCancel.disabled = !authorizationReady || Boolean(pending?.busy);
@@ -158,7 +161,7 @@ function renderSession(data) {
     ? `会话凭证已加密暂存，可点击“重试账户核验”，有效至 ${dateLabel(data.pendingAuthorization.expiresAt)}。`
     : data.authorization
     ? `请在 DeepSeek 页面核对账户并授权。有效至 ${dateLabel(data.authorization.expiresAt)}，完成后自动核验并保存。`
-    : '网页登录 Token 由 Cloudflare 核验并加密保存，Cookie 为可选辅助字段。';
+    : '运行本机连接助手，点击“连接 DeepSeek”后会自动进入官方授权。无需复制 Cookie 或 Token。';
   element('access-error').hidden = true;
   element('demo-notice').hidden = !data.demo;
   element('access-state').textContent = data.demo ? '本地演示' : 'Access 身份已确认';
@@ -298,8 +301,18 @@ form.addEventListener('submit', (event) => {
   void mutate('/api/admin/account/session', payload, '会话已验证并保存，账户状态已更新。', true);
 });
 
+async function connectFromLocal(replacePending = false) {
+  if (!session || session.demo || busy) return;
+  busy = true; updateControls(); setNotice('正在准备官方授权，完成后自动返回…');
+  try {
+    await beginLocalAuthorization({ input: connectionInput, pendingId: replacePending ? session.pendingAuthorization?.id : undefined, request, navigate: url => window.location.assign(url) });
+  } catch (error) {
+    await refresh().catch(() => {}); setNotice(accountErrorMessage(error), true);
+  } finally { busy = false; updateControls(); }
+}
 loginStart.addEventListener('click', () => {
   if (loginStart.disabled) return;
+  if (connectionInput?.callbackPort && !connectionInput.invalid) { void connectFromLocal(Boolean(session?.pendingAuthorization)); return; }
   try {
     const url = new URL(session.authorization.authorizeUrl);
     if (url.origin !== 'https://platform.deepseek.com' || url.pathname !== '/dsh/authorize') throw new Error('授权地址无效。');
@@ -427,20 +440,18 @@ window.addEventListener('pagehide', () => { form.reset(); });
 updateControls();
 refresh().then(async () => {
   if (!connectionInput) return;
-  if (session?.pendingAuthorization) { setNotice('授权已加密暂存，可直接点击“重试账户核验”。'); return; }
   if (connectionInput.invalid) { setNotice('连接参数无效，请从本机连接助手重新开始。', true); return; }
   if (connectionInput.denied) { setNotice('官方授权未获确认，可重新发起连接。', true); return; }
+  if (session?.pendingAuthorization) {
+    setNotice(connectionInput.callbackPort ? '已有待核验凭证，可继续重试；如需更换为这次官方授权，请点击“改用官方授权”。该操作会清除旧的暂存凭证。' : '凭证已加密暂存，可直接点击“重试账户核验”。');
+    return;
+  }
   if (connectionInput.code) {
     try { await mutate('/api/admin/account/authorize/complete', connectionInput, '授权会话已验证并加密保存。', true); }
     finally { connectionInput.code = ''; connectionInput.state = ''; }
     return;
   }
-  busy = true; updateControls(); setNotice('正在准备账户授权…');
-  try {
-    await request('/api/admin/account/authorize/start', connectionInput);
-    await refresh(); setNotice('授权入口已准备好，请核对账户后在官方页面授权。');
-  } catch (error) { setNotice(error.message, true); }
-  finally { connectionInput.state = ''; busy = false; updateControls(); }
+  await connectFromLocal();
 }).catch((error) => {
   session = null;
   updateControls();

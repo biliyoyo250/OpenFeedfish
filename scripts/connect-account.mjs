@@ -21,7 +21,7 @@ export async function createReceiver({ state = randomBytes(32).toString('base64u
     if (request.method === 'GET' && url.pathname === '/') {
       const fragment = new URLSearchParams({ connect_port: new URL(origin).port, connect_state: state });
       const link = `${adminOrigin}/admin#${fragment}`.replace(/&/g, '&amp;');
-      return reply(200, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>连接固定账户</title><style>body{font:16px system-ui;max-width:520px;margin:12vh auto;padding:24px;line-height:1.7}a{display:inline-block;font:inherit;padding:12px 24px;border:0;border-radius:24px;background:#315da8;color:white;text-decoration:none}</style><h1>连接固定账户</h1><p>本机接收器只转交一次授权码，不读取 Cookie，不接触账户令牌。账户核验与令牌保存由 Cloudflare 完成。</p><a href="${link}">前往受保护的管理后台</a>`);
+      return reply(200, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>连接 DeepSeek</title><style>body{font:16px system-ui;margin:0;min-height:100vh;display:grid;place-items:center;background:#fbfaff;color:#202124}main{width:min(440px,calc(100% - 48px));padding:40px 0;line-height:1.7}h1{font-size:30px;font-weight:600;margin:0 0 16px}p{margin:0 0 24px;color:#62636b}a{display:inline-block;padding:12px 24px;border-radius:28px;background:#315da8;color:white;text-decoration:none;font-weight:500}a:focus-visible{outline:3px solid #708fcb;outline-offset:4px}.note{font-size:13px;margin:20px 0 0}@media(prefers-color-scheme:dark){body{background:#121318;color:#e4e2e9}p{color:#b8b8c3}a{background:#bac7ff;color:#122655}}</style><main><h1>连接 DeepSeek</h1><p>点击后开始官方授权，完成后自动返回喂鱼后台。</p><a href="${link}">连接 DeepSeek</a><p class="note">连接有效 10 分钟，请保持终端运行。账户凭证由 Cloudflare 核验并加密保存。</p></main></html>`);
     }
     if (request.method === 'GET' && url.pathname === '/oauth/callback') {
       const receivedState = url.searchParams.get('state') || '';
@@ -47,11 +47,11 @@ export async function createReceiver({ state = randomBytes(32).toString('base64u
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   if (process.argv.includes('--help')) {
-    process.stdout.write('在可信设备运行 npm run connect-account，打开输出的本机地址。接收器只转交一次 PKCE 授权码，10 分钟后自动退出。\n');
+    process.stdout.write('运行 npm run connect-account，在侧边栏打开输出的本机地址并点击“连接 DeepSeek”。官方授权完成后自动返回喂鱼后台。接收器只转交一次授权码，不读取 Cookie 或密码，10 分钟后自动退出。\n');
   } else {
     try {
       const receiver = await createReceiver();
-      process.stdout.write(`本机连接地址：${receiver.receiverUrl}\n只转交一次授权码，不读取 Cookie 或已有凭证；10 分钟后自动退出。\n`);
+      process.stdout.write(`本机连接地址：${receiver.receiverUrl}\n请在侧边栏打开并点击“连接 DeepSeek”，官方授权完成后自动返回后台。\n请保持终端运行；接收器只转交一次授权码，不读取 Cookie 或密码，10 分钟后自动退出。\n`);
       process.once('SIGINT', () => { receiver.server.close(); });
     } catch { process.stderr.write('无法启动本机接收器，请确认 Node.js 可用后重试。\n'); process.exitCode = 1; }
   }

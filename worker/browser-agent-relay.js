@@ -1,6 +1,7 @@
 import { hash } from './lib.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, validDeviceKey, validPairCode, validCommandId, AGENT_PROTOCOL, AGENT_CLOSE } from '../shared/browser-agent-protocol.js';
 import { paymentJob, paymentJobResult, PAYMENT_PROTOCOL, PAYMENT_RPC_TIMEOUT, maxPaymentAmount } from '../shared/agent-payment-protocol.js';
+import { profileSummary } from '../shared/account-profile.js';
 
 const reply = (body, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
 const send = (ws, value) => { try { ws.send(typeof value === 'string' || value instanceof ArrayBuffer ? value : JSON.stringify(value)); } catch { /* A disconnected peer cannot receive. */ } };
@@ -24,6 +25,13 @@ export class BrowserAgentRelay {
     if (!device || device.expiresAt <= Date.now()) return null;
     return Object.hasOwn(device, 'receivingAccountId') ? device.receivingAccountId : this.env.DEEPSEEK_ACCOUNT_ID || null;
   }
+  async profileState(device) {
+    const receivingAccountId = this.recipientId(device);
+    const saved = await this.ctx.storage.get('profile');
+    const summary = receivingAccountId && device?.id && saved?.deviceId === device.id && saved.accountId === receivingAccountId ? profileSummary(saved.summary) : null;
+    const checkedAt = Number.isSafeInteger(saved?.checkedAt) && saved.checkedAt > 0 ? saved.checkedAt : null;
+    return { profile: checkedAt ? summary : null, profileUpdatedAt: summary && checkedAt ? new Date(checkedAt).toISOString() : null };
+  }
   async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === '/init' && request.method === 'POST') return this.ctx.blockConcurrencyWhile(async () => {
@@ -46,7 +54,7 @@ export class BrowserAgentRelay {
     if (path === '/status') {
       const device = await this.ctx.storage.get('device');
       const agent = this.live('agent')[0]?.deserializeAttachment();
-      return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, paymentProtocol: maxPaymentAmount(agent?.paymentProtocol) ? agent.paymentProtocol : 0, receivingAccountId: this.recipientId(device), name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0 });
+      return reply({ configured: !!device && device.expiresAt > Date.now(), online: !!agent && agent.lastSeen > Date.now() - 45000, paymentProtocol: maxPaymentAmount(agent?.paymentProtocol) ? agent.paymentProtocol : 0, receivingAccountId: this.recipientId(device), name: device?.name || null, expiresAt: device?.expiresAt || null, controlling: this.live('viewer').length > 0, ...await this.profileState(device) });
     }
     // Private service-binding route; public/device/viewer routes cannot invoke it.
     if (path === '/notify-order' && request.method === 'POST') {
@@ -59,12 +67,13 @@ export class BrowserAgentRelay {
       if ([...this.pendingJobs.values()].some((entry) => entry.selecting || entry.job.operation === 'create')) return reply({ error: 'AGENT_BUSY' }, 409);
       const device = await this.ctx.storage.get('device');
       if (device) await this.ctx.storage.put('device', { ...device, receivingAccountId: null });
+      await this.ctx.storage.delete('profile');
       return reply({ ok: true, receivingAccountId: null });
     });
     const selecting = path === '/select-recipient';
     if ((path === '/execute' || selecting) && request.method === 'POST') {
       const rejectJob = (code) => selecting ? reply({ error: code }, 409) : reply({ ok: false, code, creationAttempted: false });
-      const input = selecting ? { type: 'payment-job', id: crypto.randomUUID(), operation: 'profile', accountId: null } : await request.json();
+      const input = selecting ? { type: 'payment-job', id: crypto.randomUUID(), operation: 'profile', accountId: null, includeProfile: true } : await request.json();
       const device = await this.ctx.storage.get('device');
       const orderRead = ['capture', 'invoice'].includes(input?.operation);
       const accountId = selecting ? null : orderRead ? input.accountId : this.recipientId(device);
@@ -86,7 +95,7 @@ export class BrowserAgentRelay {
         try { await activeJob.done; } finally { this.queuedInvoice = false; }
         if (this.live('agent')[0]?.deserializeAttachment().connectionId !== activeJob.connectionId) return rejectJob('AGENT_OFFLINE');
       }
-      return this.dispatchPaymentJob(agent, job, selecting ? device : null);
+      return this.dispatchPaymentJob(agent, job, device, selecting);
     }
     if (path === '/approve' && request.method === 'POST') return this.ctx.blockConcurrencyWhile(async () => {
       const body = await request.json();
@@ -98,11 +107,11 @@ export class BrowserAgentRelay {
       if (await this.ctx.storage.get('device') && body.replace !== true) return reply({ error: 'DEVICE_ALREADY_PAIRED' }, 409);
       for (const ws of this.ctx.getWebSockets()) shut(ws, AGENT_CLOSE.REVOKED);
       const device = { id: entry.id, keyHash: entry.keyHash, name: entry.name, expiresAt: Date.now() + 30 * 86400000 };
-      await this.ctx.storage.put('device', device); await this.ctx.storage.delete('pending');
+      await this.ctx.storage.put('device', device); await this.ctx.storage.delete('pending'); await this.ctx.storage.delete('profile');
       return reply({ ok: true, name: device.name, expiresAt: device.expiresAt });
     });
     if (path === '/revoke' && request.method === 'POST') return this.ctx.blockConcurrencyWhile(async () => {
-      await this.ctx.storage.delete('device'); await this.ctx.storage.delete('pending');
+      await this.ctx.storage.delete('device'); await this.ctx.storage.delete('pending'); await this.ctx.storage.delete('profile');
       for (const ws of this.ctx.getWebSockets()) shut(ws, AGENT_CLOSE.REVOKED);
       return reply({ ok: true });
     });
@@ -132,7 +141,7 @@ export class BrowserAgentRelay {
     }
     return reply({ error: 'NOT_FOUND' }, 404);
   }
-  async dispatchPaymentJob(agent, job, selectingDevice) {
+  async dispatchPaymentJob(agent, job, dispatchedDevice, selecting = false) {
     const connectionId = agent.deserializeAttachment().connectionId;
     let release;
     const done = new Promise((resolve) => { release = resolve; });
@@ -141,18 +150,31 @@ export class BrowserAgentRelay {
       const result = await new Promise((resolveJob) => {
         const finish = (value) => { clearTimeout(timer); resolveJob(paymentJobResult(job, value)); };
         const timer = setTimeout(() => finish({ ok: false, code: 'AGENT_TIMEOUT', creationAttempted: job.operation === 'create' }), PAYMENT_RPC_TIMEOUT);
-        this.pendingJobs.set(job.id, { connectionId, job, finish, done, selecting: !!selectingDevice });
+        this.pendingJobs.set(job.id, { connectionId, job, finish, done, selecting });
         send(agent, job);
       });
-      if (!selectingDevice) return reply(result);
+      if (job.operation !== 'profile') return reply(result);
       const profile = result.data?.data?.biz_data;
-      if (!result.ok || result.httpStatus !== 200 || result.data?.code !== 0 || result.data.data?.biz_code !== 0 || !profile) return reply({ error: result.code || 'ACCOUNT_CHECK_FAILED' }, 409);
+      const verified = result.ok && result.httpStatus === 200 && result.data?.code === 0 && result.data.data?.biz_code === 0 && !!profile;
       return await this.ctx.blockConcurrencyWhile(async () => {
         const device = await this.ctx.storage.get('device');
         const current = this.live('agent')[0]?.deserializeAttachment();
-        if (device?.id !== selectingDevice.id || current?.connectionId !== connectionId) return reply({ error: 'AGENT_OFFLINE' }, 409);
-        await this.ctx.storage.put('device', { ...device, receivingAccountId: profile.id });
-        return reply({ ok: true, receivingAccountId: profile.id });
+        if (device?.id !== dispatchedDevice.id || current?.connectionId !== connectionId) return selecting ? reply({ error: 'AGENT_OFFLINE' }, 409) : reply({ ok: false, code: 'AGENT_OFFLINE', creationAttempted: false });
+        if (!selecting && this.recipientId(device) !== job.accountId) return reply({ ok: false, code: 'ACCOUNT_MISMATCH', creationAttempted: false });
+        if (!verified) {
+          if (['ACCOUNT_MISMATCH', 'LOGIN_REQUIRED', 'SESSION_EXPIRED', 'AUTH_TOKEN_MISSING', 'ACCOUNT_INELIGIBLE'].includes(result.code)) await this.ctx.storage.delete('profile');
+          return selecting ? reply({ error: result.code || 'ACCOUNT_CHECK_FAILED' }, 409) : reply(result);
+        }
+        if (!job.includeProfile) return reply(result);
+        const summary = profileSummary(profile.profile);
+        // Optional summary fields are not a protocol-version gate. Old agents
+        // remain usable, but cannot keep an earlier summary looking current.
+        if (summary) await this.ctx.storage.put('profile', { deviceId: device.id, accountId: profile.id, summary, checkedAt: Date.now() });
+        else await this.ctx.storage.delete('profile');
+        if (!selecting) return reply(result);
+        const selected = { ...device, receivingAccountId: profile.id };
+        await this.ctx.storage.put('device', selected);
+        return reply({ ok: true, receivingAccountId: profile.id, ...await this.profileState(selected) });
       });
     } finally {
       this.pendingJobs.delete(job.id);

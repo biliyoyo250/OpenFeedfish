@@ -1,4 +1,5 @@
 import { validAccountId, validCommandId } from './browser-agent-protocol.js';
+import { profileSummary } from './account-profile.js';
 export const PAYMENT_PROTOCOL = 3;
 export const PAYMENT_JOB_TTL = 55000;
 export const PAYMENT_RPC_TIMEOUT = 65000;
@@ -8,7 +9,7 @@ const errors = new Set(['LOGIN_REQUIRED', 'ACCOUNT_NOT_CONFIGURED', 'ACCOUNT_MIS
 export function paymentJob(value, accountId) {
   if (!value || value.type !== 'payment-job' || !validCommandId(value.id) || value.accountId !== accountId) throw new Error('INVALID_PAYMENT_JOB');
   const base = { type: 'payment-job', id: value.id, accountId, operation: value.operation, ttlMs: PAYMENT_JOB_TTL };
-  if (value.operation === 'profile' && (accountId === null || validAccountId(accountId))) return base;
+  if (value.operation === 'profile' && (accountId === null || validAccountId(accountId))) return value.includeProfile === true ? { ...base, includeProfile: true } : base;
   if (!validAccountId(accountId)) throw new Error('INVALID_PAYMENT_JOB');
   if (value.operation === 'create' && validCommandId(value.requestId) && ['wechat', 'alipay'].includes(value.paymentMethod) && Number.isSafeInteger(value.amountFen) && value.amountFen >= 100 && value.amountFen <= maxPaymentAmount(PAYMENT_PROTOCOL) && value.amountFen % 100 === 0) return { ...base, requestId: value.requestId, paymentMethod: value.paymentMethod, amountFen: value.amountFen };
   if (['capture', 'invoice'].includes(value.operation) && orderId(value.providerOrderId)) return { ...base, providerOrderId: value.providerOrderId };
@@ -33,7 +34,8 @@ export function paymentJobResult(job, value) {
   if (source && job.operation === 'profile') {
     if (!validAccountId(source.id) || (job.accountId !== null && source.id !== job.accountId)) return { ok: false, code: 'ACCOUNT_MISMATCH', creationAttempted: false };
     if (source.currency !== 'CNY') return { ok: false, code: 'ACCOUNT_INELIGIBLE', creationAttempted: false };
-    data = { id: source.id, currency: 'CNY' };
+    const profile = job.includeProfile === true ? profileSummary(source.profile) : null;
+    data = { id: source.id, currency: 'CNY', ...(profile ? { profile } : {}) };
   } else if (source && job.operation === 'create') {
     data = { payment_order_id: text(source.payment_order_id, 200), amount: money(source.amount), url: text(source.url, 4096), ...(source.currency !== undefined ? { currency: currency(source.currency) } : {}), ...(typeof source.fallback === 'boolean' ? { fallback: source.fallback } : {}) };
   } else if (source?.order && job.operation === 'capture') {

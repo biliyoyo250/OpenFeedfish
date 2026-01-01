@@ -8,7 +8,7 @@ export function agentPaymentFetcher(env, scope) {
   return async (url, options = {}) => {
     let operation; let fields = {}; let dispatched = false;
     try {
-      if (url === 'https://platform.deepseek.com/auth-api/v0/users/current' && options.method === 'GET' && options.body === undefined) operation = 'profile';
+      if (url === 'https://platform.deepseek.com/auth-api/v0/users/current' && options.method === 'GET' && options.body === undefined) { operation = 'profile'; if (scope?.includeProfile === true) fields.includeProfile = true; }
       else if (scope?.requestId && url === 'https://platform.deepseek.com/api/v1/payments' && options.method === 'POST') {
         const body = JSON.parse(options.body || 'null'); const info = body?.order_info;
         const amountFen = scope.amountFen ?? 100;

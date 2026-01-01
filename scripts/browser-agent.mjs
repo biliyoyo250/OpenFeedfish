@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { executePaymentJob } from './agent-payments.mjs';
 import { paymentJob, PAYMENT_PROTOCOL } from '../shared/agent-payment-protocol.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, VIEWPORT, AGENT_PROTOCOL, AGENT_CLOSE, validDeviceKey } from '../shared/browser-agent-protocol.js';
+import { PROFILE_AVATAR_ORIGINS } from '../shared/account-profile.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const platform = 'https://platform.deepseek.com';
@@ -53,9 +54,10 @@ export function serverOrigin(value) {
 
 // Runs inside this product's dedicated browser. Only a projected account result
 // leaves it; userToken and Cookie are never returned to Node or Cloudflare.
-export async function checkBrowserAccount(page, expectedId) {
+export async function checkBrowserAccount(page, expectedId, { includeProfile = false } = {}) {
   if (new URL(page.url()).origin !== platform) return { ok: false, code: 'LOGIN_REQUIRED' };
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async ({ expectedId, includeProfile, avatarOrigins }) => {
+    if (location.origin !== 'https://platform.deepseek.com') return { ok: false, code: 'LOGIN_REQUIRED' };
     let token;
     try {
       const raw = localStorage.getItem('userToken');
@@ -68,10 +70,44 @@ export async function checkBrowserAccount(page, expectedId) {
       if (value?.code === 40002) return { ok: false, code: 'AUTH_TOKEN_MISSING', httpStatus: response.status };
       const user = value?.data?.biz_data;
       if (!response.ok || value?.code !== 0 || value?.data?.biz_code !== 0 || typeof user?.id !== 'string') return { ok: false, code: 'ACCOUNT_CHECK_FAILED', httpStatus: response.status };
-      return { ok: true, accountId: user.id, currency: user.currency, eligible: user.is_api_banned !== true && user.feature_gates?.PAYMENT !== false };
+      const eligible = user.is_api_banned !== true && user.feature_gates?.PAYMENT !== false;
+      const account = { ok: true, accountId: user.id, currency: user.currency, eligible };
+      if (!includeProfile || !user.id || user.id.length > 200 || !eligible || user.currency !== 'CNY' || (expectedId !== null && user.id !== expectedId)) return account;
+
+      // The Platform sidebar takes its name and picture from id_profile.
+      const identity = user.id_profile;
+      const profile = {
+        nickname: typeof identity?.name === 'string' && identity.name.length <= 80 ? identity.name : null,
+        avatarUrl: null,
+        balance: null,
+      };
+      if (typeof identity?.picture === 'string' && identity.picture.length <= 1024 && !/\s/.test(identity.picture)) {
+        try {
+          const url = new URL(identity.picture);
+          if (url.protocol === 'https:' && avatarOrigins.includes(url.origin) && !url.username && !url.password && !url.search && !url.hash) profile.avatarUrl = url.href;
+        } catch { /* The account can be verified without a usable picture. */ }
+      }
+      try {
+        // Match the Platform usage page's ordinary wallet for this currency.
+        const summary = await fetch('/api/v0/users/get_user_summary', { credentials: 'same-origin', headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(4000) });
+        if (summary.ok) {
+          const data = await summary.json();
+          const wallets = data?.data?.biz_data?.normal_wallets;
+          if (data?.code === 0 && data.data.biz_code === 0 && Array.isArray(wallets)) {
+            const cny = wallets.filter((wallet) => wallet?.currency === 'CNY');
+            const balance = cny.length === 1 ? cny[0].balance : null;
+            const validNumber = Number.isFinite(balance) && Math.abs(balance) < 1e12;
+            const validDecimal = typeof balance === 'string' && /^-?\d{1,12}(?:\.\d{1,32})?$/.test(balance);
+            if (validNumber || validDecimal) {
+              profile.balance = new Intl.NumberFormat('en-US', { useGrouping: false, minimumFractionDigits: 2, maximumFractionDigits: 2, roundingMode: 'trunc' }).format(balance);
+            }
+          }
+        }
+      } catch { /* Account verification does not depend on the balance endpoint. */ }
+      return { ...account, profile };
     } catch { return { ok: false, code: 'UPSTREAM_UNAVAILABLE' }; }
     finally { token = undefined; }
-  });
+  }, { expectedId, includeProfile, avatarOrigins: PROFILE_AVATAR_ORIGINS });
   const checked = accountResult(result, expectedId);
   // The relay checks eligibility again before projecting the admin result.
   // Keep the verified flag on this private agent-to-relay message.
@@ -222,7 +258,7 @@ export async function runAgent() {
               let job; try { job = paymentJob(message, message.accountId); } catch { return; }
               if (seen.has(job.id)) return;
               seen.add(job.id); if (seen.size > 512) seen.delete(seen.values().next().value);
-              const result = await executePaymentJob(page, job, { accountId: job.accountId, receivedAt, checkAccount: () => checkBrowserAccount(page, job.accountId), active: () => !stopping && connection === socket && connection.readyState === WebSocket.OPEN });
+              const result = await executePaymentJob(page, job, { accountId: job.accountId, receivedAt, checkAccount: (options) => checkBrowserAccount(page, job.accountId, options), active: () => !stopping && connection === socket && connection.readyState === WebSocket.OPEN });
               send({ type: 'payment-job-result', id: job.id, result });
               return;
             }

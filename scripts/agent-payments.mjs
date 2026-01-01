@@ -12,9 +12,12 @@ export async function executePaymentJob(page, value, { accountId, checkAccount, 
     assertActive();
     if (new URL(page.url()).origin !== origin) throw Object.assign(new Error(), { code: 'LOGIN_REQUIRED' });
     if (job.operation === 'create' && new URL(page.url()).pathname !== '/top_up') await page.goto(`${origin}/top_up`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    const account = accountResult(await checkAccount(), accountId);
+    const account = accountResult(await checkAccount({ includeProfile: job.includeProfile === true }), accountId);
     if (!account.ok) return paymentJobResult(job, { ok: false, code: account.code, httpStatus: account.httpStatus, creationAttempted: false });
-    if (job.operation === 'profile') return paymentJobResult(job, { ok: true, httpStatus: 200, isJson: true, creationAttempted: false, data: { code: 0, data: { biz_code: 0, biz_data: { id: account.accountId, currency: 'CNY' } } } });
+    if (job.operation === 'profile') {
+      assertActive();
+      return paymentJobResult(job, { ok: true, httpStatus: 200, isJson: true, creationAttempted: false, data: { code: 0, data: { biz_code: 0, biz_data: { id: account.accountId, currency: 'CNY', profile: account.profile } } } });
+    }
     const deviceId = job.operation === 'create' ? await device(page) : null;
     if (job.operation === 'create') await verification(page);
     assertActive(11000);

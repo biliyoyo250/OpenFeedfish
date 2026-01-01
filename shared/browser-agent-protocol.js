@@ -1,3 +1,5 @@
+import { profileSummary } from './account-profile.js';
+
 export const VIEWPORT = Object.freeze({ width: 1024, height: 768 });
 export const MAX_FRAME_BYTES = 300000;
 export const AGENT_PROTOCOL = 1;
@@ -33,5 +35,6 @@ export function accountResult(value, expectedId) {
   }
   if (!validAccountId(value.accountId) || (expectedId !== null && value.accountId !== expectedId)) return { ok: false, code: 'ACCOUNT_MISMATCH' };
   if (value.currency !== 'CNY' || value.eligible !== true) return { ok: false, code: 'ACCOUNT_INELIGIBLE' };
-  return { ok: true, accountId: value.accountId, currency: 'CNY' };
+  const profile = profileSummary(value.profile);
+  return { ok: true, accountId: value.accountId, currency: 'CNY', ...(profile ? { profile } : {}) };
 }

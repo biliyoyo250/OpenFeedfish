@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 import { paymentJob, paymentJobResult, PAYMENT_JOB_TTL, PAYMENT_RPC_TIMEOUT } from '../shared/agent-payment-protocol.js';
 import { executePaymentJob } from '../scripts/agent-payments.mjs';
+import { checkBrowserAccount } from '../scripts/browser-agent.mjs';
+import { profileSummary } from '../shared/account-profile.js';
 import { agentPaymentFetcher } from '../worker/agent-payments.js';
 import { BrowserAgentRelay } from '../worker/browser-agent-relay.js';
 import { createPayment, queryPayment, mapPaymentResult } from '../worker/provider.js';
@@ -39,6 +42,46 @@ test('payment response projection strips private data without hiding invalid amo
   const capture = paymentJob({ ...base('capture'), providerOrderId: 'synthetic-order' }, 'fixed');
   const filtered = paymentJobResult(capture, envelope({ order: { status: 'SUCCESS', amount: {}, currency: 'private' } }));
   assert.throws(() => mapPaymentResult(filtered.data.data.biz_data, { provider_order_id: 'synthetic-order', amount_fen: 100 }));
+});
+
+test('an explicit verified profile job reads only the CNY ordinary wallet inside the browser', async () => {
+  const calls = [];
+  const token = 'synthetic-web-token';
+  const page = {
+    url: () => 'https://platform.deepseek.com/usage',
+    evaluate: (callback, input) => runInNewContext(`(${callback.toString()})(input)`, {
+      input, URL, AbortSignal, Intl,
+      location: { origin: 'https://platform.deepseek.com' },
+      localStorage: { getItem: () => JSON.stringify({ value: token, __version: '0' }) },
+      fetch: async (path, options) => {
+        calls.push(path);
+        assert.equal(options.headers.Authorization, `Bearer ${token}`);
+        assert.equal(options.redirect, 'error');
+        assert.equal(options.method, undefined);
+        const data = path === '/auth-api/v0/users/current'
+          ? { id: 'fixed', currency: 'CNY', token, id_profile: { name: '  测试账户  ', picture: 'https://lh3.googleusercontent.com/a/synthetic' } }
+          : { normal_wallets: [{ currency: 'USD', balance: '44.00' }, { currency: 'CNY', balance: '13.149' }], bonus_wallets: [{ currency: 'CNY', balance: '9.00' }], token };
+        return Response.json({ code: 0, data: { biz_code: 0, biz_data: data } });
+      },
+    }),
+  };
+  const run = (job) => executePaymentJob(page, job, { accountId: job.accountId, checkAccount: (options) => checkBrowserAccount(page, job.accountId, options), active: () => true });
+  const result = await run({ ...base('profile'), includeProfile: true });
+  assert.deepEqual(calls.splice(0), ['/auth-api/v0/users/current', '/api/v0/users/get_user_summary']);
+  assert.deepEqual(result.data.data.biz_data, { id: 'fixed', currency: 'CNY', profile: { nickname: '测试账户', avatarUrl: 'https://lh3.googleusercontent.com/a/synthetic', balance: '13.14' } });
+  assert.equal(JSON.stringify(result).includes(token), false);
+  assert.deepEqual((await run(base('profile'))).data.data.biz_data, { id: 'fixed', currency: 'CNY' });
+  assert.deepEqual(calls.splice(0), ['/auth-api/v0/users/current']);
+  assert.equal((await run({ ...base('profile'), accountId: 'other', includeProfile: true })).code, 'ACCOUNT_MISMATCH');
+  assert.deepEqual(calls, ['/auth-api/v0/users/current']);
+});
+
+test('profile avatar projection rejects non-HTTPS, off-host, and credential-bearing URLs', () => {
+  for (const avatarUrl of [
+    'blob:https://lh3.googleusercontent.com/asset', 'http://lh3.googleusercontent.com/avatar',
+    'https://lh3.googleusercontent.com.invalid/avatar', 'https://lh3.googleusercontent.com:8443/avatar',
+    'https://user:private@lh3.googleusercontent.com/avatar', 'https://lh3.googleusercontent.com/avatar?token=private',
+  ]) assert.equal(profileSummary({ avatarUrl }).avatarUrl, null);
 });
 
 test('executing host sends a creation once and preserves challenge uncertainty', async () => {

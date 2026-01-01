@@ -12,7 +12,8 @@ import { connectManualSession } from './manual-session.js';
 import { agentRequest, agentViewer } from './browser-agent.js';
 import { agentPaymentFetcher } from './agent-payments.js';
 import { reconcileOrder } from './reconcile.js';
-const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' wss://feedfish.example; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
+import { PROFILE_AVATAR_ORIGINS } from '../shared/account-profile.js';
+const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: ${PROFILE_AVATAR_ORIGINS.join(' ')}; connect-src 'self' wss://feedfish.example; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` };
 const json = (data, status = 200) => Response.json(data, { status, headers });
 const demoAccount = { configured: false, accountId: 'demo-fixed-account', status: 'not_configured', updatedAt: null, lastCheckedAt: null };
 async function paymentFailure(env, identity, event, error, transport) {
@@ -41,7 +42,7 @@ export async function handleAdmin(request, env) {
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
   }
   if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, ...await readTurnstileSettings(env, identity.demo), legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
-  if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true }) : agentRequest(env, '/status');
+  if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true, profile: null, profileUpdatedAt: null }) : agentRequest(env, '/status');
   if (path === '/api/admin/account/agent-payment/status' && request.method === 'GET') return json({ order: identity.demo ? null : await readAgentTestOrder(env, new URL(request.url).searchParams.get('id')) });
   if (path === '/api/admin/browser-agent/socket' && request.method === 'GET' && !identity.demo) { assertOrigin(request, false); return agentViewer(request, env, identity); }
   if (path === '/api/admin/account/login/status' && request.method === 'GET' && !identity.demo) return json(await browserLoginDiagnostics(env, identity));
@@ -176,8 +177,18 @@ export async function handleAdmin(request, env) {
     }
   }
   if (path === '/api/admin/account/check') {
-    if (body.transport !== undefined && body.transport !== 'browser') throw new ApiError(400, 'INVALID_REQUEST', '账户核验方式无效。');
+    if (body.transport !== undefined && !['browser', 'agent'].includes(body.transport)) throw new ApiError(400, 'INVALID_REQUEST', '账户核验方式无效。');
     if (body.paymentContext !== undefined && typeof body.paymentContext !== 'boolean') throw new ApiError(400, 'INVALID_REQUEST', '支付环境检查参数无效。');
+    if (body.transport === 'agent') {
+      const status = await (await agentRequest(env, '/status')).json();
+      if (!status.receivingAccountId) throw new ApiError(503, 'ACCOUNT_NOT_CONFIGURED', '请先启用当前登录的收款账号。');
+      const paymentEnv = { ...env, PAYMENT_TRANSPORT: 'agent', DEEPSEEK_ACCOUNT_ID: status.receivingAccountId };
+      const account = await verifyAccount(paymentEnv, {}, agentPaymentFetcher(paymentEnv, { includeProfile: true }));
+      const refreshed = await (await agentRequest(env, '/status')).json();
+      if (refreshed.receivingAccountId !== account.id) throw new ApiError(409, 'ACCOUNT_MISMATCH', '收款账号已变化，请重新核验。');
+      await audit(env, 'session_agent_checked', identity.email, now).catch(() => {});
+      return json({ ok: true, profile: refreshed.profile ?? null, profileUpdatedAt: refreshed.profileUpdatedAt ?? null });
+    }
     try {
       const credentials = await credentialsFor(env, true);
       const account = body.transport === 'browser' ? await verifyAccountInBrowser(env, credentials, undefined, body.paymentContext === true) : await verifyAccount(env, credentials);

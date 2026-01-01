@@ -56,9 +56,14 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     const discover = parsed(await next(agentMessages, (v) => parsed(v)?.type === 'payment-job'));
     assert.equal(discover.operation, 'profile'); assert.equal(discover.accountId, null);
     assert.equal((await req('/clear-recipient', {})).status, 409);
-    agent.send(JSON.stringify({ type: 'payment-job-result', id: discover.id, result: { ok: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { id: 'new-recipient', currency: 'CNY' } } } } }));
+    const profile = { nickname: 'Runtime fish', avatarUrl: null, balance: '13.14' };
+    agent.send(JSON.stringify({ type: 'payment-job-result', id: discover.id, result: { ok: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { id: 'new-recipient', currency: 'CNY', profile, email: 'must-not-forward@example.invalid' } } } } }));
     assert.equal((await (await select).json()).receivingAccountId, 'new-recipient');
-    assert.equal((await (await req('/status')).json()).receivingAccountId, 'new-recipient');
+    const selectedState = await (await req('/status')).json();
+    assert.equal(selectedState.receivingAccountId, 'new-recipient');
+    assert.deepEqual(selectedState.profile, profile);
+    assert.ok(Number.isFinite(Date.parse(selectedState.profileUpdatedAt)));
+    assert.equal(JSON.stringify(selectedState).includes('must-not-forward'), false);
     assert.equal((await (await req('/execute', largerJob)).json()).code, 'ACCOUNT_MISMATCH');
 
     const capture = { ...rpcJob, id: crypto.randomUUID(), operation: 'capture', providerOrderId: 'synthetic-public' };
@@ -102,7 +107,9 @@ test('Durable Object pairs one browser, relays bounded input/frames, redacts res
     assert.equal((await req('/revoke', {})).status, 200);
     assert.equal(await closed, 4001);
     assert.equal((await req('/agent', undefined, { ...authorization, Upgrade: 'websocket' })).status, 403);
-    assert.equal((await (await req('/status')).json()).configured, false);
+    const revokedState = await (await req('/status')).json();
+    assert.equal(revokedState.configured, false);
+    assert.equal(revokedState.profile, null);
     const replacementKey = 'N'.repeat(43);
     const replacement = await (await req('/init', { name: 'Windows-repair', protocol: 1, keyHash: await hash(replacementKey) })).json();
     assert.equal((await req('/approve', { code: replacement.code })).status, 200);

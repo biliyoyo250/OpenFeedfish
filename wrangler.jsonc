@@ -9,7 +9,7 @@
   "migrations": [{ "tag": "browser-agent-v1", "new_sqlite_classes": ["BrowserAgentRelay"] }],
   "workers_dev": false,
   "assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": ["/api/*", "/admin", "/admin/*"] },
-  "vars": { "LOCAL_DEMO": "false", "BROWSER_LOGIN_ENABLED": "false", "LEGACY_CLOUD_TESTS_ENABLED": "false", "TURNSTILE_SITE_KEY": "", "PAYMENTS_ENABLED": "false", "DEEPSEEK_ACCOUNT_ID": "", "ACCESS_TEAM_DOMAIN": "", "ACCESS_AUD": "", "ADMIN_EMAILS": "" },
+  "vars": { "LOCAL_DEMO": "false", "BROWSER_LOGIN_ENABLED": "false", "LEGACY_CLOUD_TESTS_ENABLED": "false", "TURNSTILE_SITE_KEY": "", "PAYMENTS_ENABLED": "false", "PUBLIC_PAYMENT_TRANSPORT": "agent", "PUBLIC_PAYMENT_METHODS": "alipay", "DEEPSEEK_ACCOUNT_ID": "", "ACCESS_TEAM_DOMAIN": "", "ACCESS_AUD": "", "ADMIN_EMAILS": "" },
   "d1_databases": [{ "binding": "DB", "database_name": "feedfish", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
   "observability": { "enabled": false },
   "triggers": { "crons": ["* * * * *"] }

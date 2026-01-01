@@ -103,7 +103,14 @@ export function initBrowserAgent() {
     try {
       const result = await api('/api/admin/account/check', { transport: 'agent' });
       await refresh();
-      profileMessage.textContent = result.profile ? '已同步账号资料。' : '账号已核验。请重启 browser-agent 加载新版，再刷新账号资料。';
+      if (result.profile) {
+        const missing = [
+          [result.profile.nickname, '昵称'],
+          [result.profile.avatarUrl, '头像'],
+          [result.profile.balance, '余额'],
+        ].filter(([value]) => !value).map(([, label]) => label);
+        profileMessage.textContent = missing.length ? `账号已核验，暂未读到${missing.join('、')}。` : '已同步账号资料。';
+      } else profileMessage.textContent = '账号已核验。请重启 browser-agent 加载新版，再刷新账号资料。';
     } catch (error) {
       await refresh();
       profileMessage.textContent = error.message;

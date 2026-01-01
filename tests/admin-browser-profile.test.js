@@ -3,9 +3,47 @@ import assert from 'node:assert/strict';
 import { SignJWT, generateKeyPair, exportJWK } from 'jose';
 import { BrowserAgentRelay } from '../worker/browser-agent-relay.js';
 import worker from '../worker/index.js';
+import { profileSummary, PROFILE_AVATAR_MAX_BYTES } from '../shared/account-profile.js';
 
 const summary = { nickname: '小鱼', avatarUrl: null, balance: '13.14' };
 const envelope = (profile, id = 'fixed') => ({ ok: true, httpStatus: 200, isJson: true, data: { code: 0, data: { biz_code: 0, biz_data: { id, currency: 'CNY', ...(profile === undefined ? {} : { profile }), token: 'must-not-forward' } } } });
+
+function jpegThumbnail(size) {
+  const bytes = Buffer.alloc(size);
+  bytes.set([0xff, 0xd8, 0xff, 0xe0]);
+  bytes.set([0xff, 0xd9], size - 2);
+  return `data:image/jpeg;base64,${bytes.toString('base64')}`;
+}
+
+test('profile avatar permits bounded JPEG data without widening external image origins', () => {
+  const avatar = jpegThumbnail(PROFILE_AVATAR_MAX_BYTES);
+  const result = profileSummary({ ...summary, avatarUrl: avatar });
+  assert.equal(result.avatarUrl, avatar);
+  assert.deepEqual(profileSummary(result), result);
+  for (const size of [6, 7, 8]) assert.equal(profileSummary({ avatarUrl: jpegThumbnail(size) }).avatarUrl, jpegThumbnail(size));
+  for (const extra of [1, 2, 3]) assert.equal(profileSummary({ avatarUrl: jpegThumbnail(PROFILE_AVATAR_MAX_BYTES + extra) }).avatarUrl, null);
+  for (const url of ['https://lh3.googleusercontent.com/avatar', 'https://lh4.googleusercontent.com/avatar']) assert.equal(profileSummary({ avatarUrl: url }).avatarUrl, url);
+  for (const url of ['https://evil.invalid/avatar.jpg', 'http://lh3.googleusercontent.com/avatar', 'https://lh3.googleusercontent.com.evil.invalid/avatar', 'https://lh3.googleusercontent.com/avatar?token=private']) assert.equal(profileSummary({ avatarUrl: url }).avatarUrl, null);
+});
+
+test('profile avatar rejects malformed base64, non-JPEG data and missing JPEG markers', () => {
+  const valid = jpegThumbnail(8);
+  const invalid = [
+    '', 'data:image/jpeg;base64,', valid.replace('image/jpeg', 'image/png'),
+    valid.replace('image/jpeg', 'image/svg+xml'), valid.replace('base64', 'BASE64'),
+    valid.replace('image/jpeg;', 'image/jpeg;charset=utf-8;'),
+    `${valid}\n`, `${valid.slice(0, -1)} =`, valid.slice(0, -1), `${valid}=`,
+    'data:image/jpeg;base64,/9j/4AAA_9k=',
+    'data:image/jpeg;base64,/9j/4AAA/9l=', // Non-canonical padding bits.
+    `data:image/jpeg;base64,${Buffer.from('<svg onload="alert(1)"/>').toString('base64')}`,
+    `data:image/jpeg;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xd9]).toString('base64')}`,
+    `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0x00, 0xff, 0xd9]).toString('base64')}`,
+    `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x00]).toString('base64')}`,
+    `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0xff, 0xd9, 0x00]).toString('base64')}`,
+    'data:image/jpeg;base64,%2F9j%2F2Q%3D%3D',
+  ];
+  for (const avatarUrl of invalid) assert.equal(profileSummary({ avatarUrl }).avatarUrl, null, avatarUrl);
+});
 
 function fixture() {
   const storage = new Map([['device', { id: 'paired-device', receivingAccountId: 'fixed', name: 'Test browser', expiresAt: Date.now() + 600000 }]]);
@@ -29,6 +67,17 @@ function fixture() {
   };
   return { relay, request, storage, socket, state, start, finish, jobs };
 }
+
+test('maximum-size JPEG avatar fits the existing profile message and survives relay projection', async () => {
+  const f = fixture();
+  const profile = { ...summary, avatarUrl: jpegThumbnail(PROFILE_AVATAR_MAX_BYTES) };
+  const entry = await f.start();
+  const frame = JSON.stringify({ type: 'payment-job-result', id: entry.job.id, result: envelope(profile) });
+  assert.ok(Buffer.byteLength(frame) < 8192);
+  const result = await f.finish(entry, envelope(profile));
+  assert.equal(result.ok, true);
+  assert.deepEqual((await f.state()).profile, profile);
+});
 
 test('verified profile jobs cache only safe fields and status reads do not contact the browser', async () => {
   const f = fixture();

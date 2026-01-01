@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import { executePaymentJob } from './agent-payments.mjs';
 import { paymentJob, PAYMENT_PROTOCOL } from '../shared/agent-payment-protocol.js';
 import { browserCommand, accountResult, MAX_FRAME_BYTES, VIEWPORT, AGENT_PROTOCOL, AGENT_CLOSE, validDeviceKey } from '../shared/browser-agent-protocol.js';
-import { PROFILE_AVATAR_ORIGINS } from '../shared/account-profile.js';
+import { PROFILE_AVATAR_MAX_BYTES, PROFILE_AVATAR_ORIGINS } from '../shared/account-profile.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const platform = 'https://platform.deepseek.com';
@@ -52,6 +52,26 @@ export function serverOrigin(value) {
   return url.origin;
 }
 
+async function readProfileThumbnail(page, expectedFingerprint) {
+  const image = await page.locator('a[href="/profile"] img').elementHandle({ timeout: 600 }).catch(() => null);
+  if (!image) return null;
+  try {
+    const fingerprint = () => image.evaluate(async (img) => {
+      if (location.origin !== 'https://platform.deepseek.com' || !img.isConnected || !img.complete || !img.naturalWidth) return null;
+      const { x, y, width, height } = img.getBoundingClientRect();
+      if (width < 12 || height < 12 || width > 80 || height > 80 || x < 0 || y < 0 || x + width > innerWidth || y + height > innerHeight) return null;
+      if (!img.closest('a[href="/profile"]')?.contains(document.elementFromPoint(x + width / 2, y + height / 2))) return null;
+      const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(img.currentSrc));
+      return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+    });
+    if (await fingerprint() !== expectedFingerprint) return null;
+    const thumbnail = await image.screenshot({ type: 'jpeg', quality: 84, scale: 'css', timeout: 1200 });
+    if (thumbnail.length <= PROFILE_AVATAR_MAX_BYTES && await fingerprint() === expectedFingerprint) return `data:image/jpeg;base64,${thumbnail.toString('base64')}`;
+  } catch { /* The sidebar can be hidden or change while reading. */ }
+  finally { await image.dispose().catch(() => {}); }
+  return null;
+}
+
 // Runs inside this product's dedicated browser. Only a projected account result
 // leaves it; userToken and Cookie are never returned to Node or Cloudflare.
 export async function checkBrowserAccount(page, expectedId, { includeProfile = false } = {}) {
@@ -81,10 +101,18 @@ export async function checkBrowserAccount(page, expectedId, { includeProfile = f
         avatarUrl: null,
         balance: null,
       };
-      if (typeof identity?.picture === 'string' && identity.picture.length <= 1024 && !/\s/.test(identity.picture)) {
+      let avatarFingerprint = null;
+      if (typeof identity?.picture === 'string' && identity.picture && identity.picture.length <= 1024 && !/\s/.test(identity.picture)) {
         try {
-          const url = new URL(identity.picture);
-          if (url.protocol === 'https:' && avatarOrigins.includes(url.origin) && !url.username && !url.password && !url.search && !url.hash) profile.avatarUrl = url.href;
+          const url = new URL(identity.picture, location.origin);
+          if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+            if (avatarOrigins.includes(url.origin) && !url.search && !url.hash) profile.avatarUrl = url.href;
+            else {
+              // Match the already-rendered avatar without exporting its URL.
+              const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(url.href));
+              avatarFingerprint = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+            }
+          }
         } catch { /* The account can be verified without a usable picture. */ }
       }
       try {
@@ -104,10 +132,11 @@ export async function checkBrowserAccount(page, expectedId, { includeProfile = f
           }
         }
       } catch { /* Account verification does not depend on the balance endpoint. */ }
-      return { ...account, profile };
+      return { ...account, profile, avatarFingerprint };
     } catch { return { ok: false, code: 'UPSTREAM_UNAVAILABLE' }; }
     finally { token = undefined; }
   }, { expectedId, includeProfile, avatarOrigins: PROFILE_AVATAR_ORIGINS });
+  if (result.avatarFingerprint) result.profile.avatarUrl = await readProfileThumbnail(page, result.avatarFingerprint);
   const checked = accountResult(result, expectedId);
   // The relay checks eligibility again before projecting the admin result.
   // Keep the verified flag on this private agent-to-relay message.

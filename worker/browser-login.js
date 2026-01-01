@@ -207,6 +207,10 @@ export async function anonymousBrowserConnectivity(env) {
       return { httpStatus: response.status, isJson, code };
     });
     return { mode: 'browser', reachable: true, ...result };
-  } catch (error) { return { mode: 'browser', reachable: false, code: /Browser time limit exceeded|429/.test(String(error.message)) ? 'BROWSER_QUOTA' : 'BROWSER_UNAVAILABLE' }; }
+  } catch (error) {
+    const message = String(error.message);
+    const code = /Browser time limit exceeded|daily.*(?:limit|quota)/i.test(message) ? 'BROWSER_QUOTA' : /429/.test(message) ? 'BROWSER_RATE_LIMIT' : 'BROWSER_UNAVAILABLE';
+    return { mode: 'browser', reachable: false, code };
+  }
   finally { if (browser) await terminate(browser); }
 }

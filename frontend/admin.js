@@ -310,7 +310,8 @@ for (const button of testButtons) button.addEventListener('click', async () => {
     await loadOrders(); setNotice('测试码已生成，请核对支付方式与金额。');
   } catch (error) {
     const status = Number.isInteger(error.diagnostic?.upstreamStatus) ? `（HTTP ${error.diagnostic.upstreamStatus}）` : '';
-    setNotice(`测试码未生成。${error.message}${status}`, true);
+    const challenge = ['captcha', 'challenge'].includes(error.diagnostic?.upstreamChallenge) ? ' 上游要求浏览器验证。' : '';
+    setNotice(`测试码未生成。${error.message}${status}${challenge}`, true);
     await loadOrders();
   } finally { busy = false; updateControls(); }
 });

@@ -52,6 +52,8 @@ export async function handleAdmin(request, env) {
       if (!(error instanceof ApiError)) throw error;
       const diagnostic = { stage: 'payment', code: error.code };
       for (const key of ['upstreamStatus', 'upstreamCode', 'upstreamBizCode']) if (Number.isSafeInteger(error[key])) diagnostic[key] = error[key];
+      if (['captcha', 'challenge'].includes(error.upstreamChallenge)) diagnostic.upstreamChallenge = error.upstreamChallenge;
+      await env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind(`payment_test_failed:${JSON.stringify(diagnostic)}`, identity.email, Date.now()).run().catch(() => {});
       return json({ error: { code: error.code, message: error.message, diagnostic } }, error.status);
     }
   }

@@ -18,8 +18,9 @@ export function agentPaymentFetcher(env, scope) {
       else if (scope?.providerOrderId && url === 'https://platform.deepseek.com/auth-api/v0/users/get_all_invoice' && options.method === 'GET' && options.body === undefined) { operation = 'invoice'; fields = { providerOrderId: scope.providerOrderId }; }
       else throw new Error();
       const job = paymentJob({ type: 'payment-job', id: crypto.randomUUID(), accountId: env.DEEPSEEK_ACCOUNT_ID, operation, ...fields }, env.DEEPSEEK_ACCOUNT_ID);
+      const rpc = operation === 'invoice' && scope.waitForBrowser ? { ...job, waitForBrowser: true } : job;
       let result;
-      try { dispatched = true; result = paymentJobResult(job, await (await agentRequest(env, '/execute', job)).json()); }
+      try { dispatched = true; result = paymentJobResult(job, await (await agentRequest(env, '/execute', rpc)).json()); }
       catch { throw Object.assign(new ApiError(503, 'AGENT_UNAVAILABLE', '自托管浏览器请求未完成，请检查原账单；不会自动重复创建。'), { creationAttempted: operation === 'create' }); }
       if (!result.ok) {
         const messages = { AGENT_OFFLINE: '自托管浏览器离线，请保持执行端运行。', AGENT_UPDATE_REQUIRED: '请重启本机 browser-agent 加载更新。', AGENT_BUSY: '浏览器正在处理另一项任务，请稍后查看。', AGENT_TIMEOUT: '浏览器任务超时，请核对原账单，避免重复创建。', ACCOUNT_NOT_CONFIGURED: '请先启用当前登录的收款账号。', ACCOUNT_MISMATCH: '当前登录的账号与本次订单的收款账号不一致。', ACCOUNT_INELIGIBLE: '浏览器账户不符合 CNY 充值要求。', LOGIN_REQUIRED: '请先在实时窗口中登录 DeepSeek。', PAYMENT_VERIFICATION_REQUIRED: '官方浏览器验证未完成，请在实时窗口手动处理。', PAYMENT_DEVICE_UNAVAILABLE: '官网设备组件未就绪，尚未发起支付请求。', JOB_EXPIRED: '本次浏览器任务已超时或连接已失效。' };

@@ -51,7 +51,7 @@ function publicAgentSetup(t) {
     const data = job.operation === 'profile' ? { id: job.accountId, currency: 'CNY' }
       : job.operation === 'create' ? { payment_order_id: 'synthetic-public-order', amount: String(job.amountFen / 100), currency: 'CNY', url: 'https://payments.example.invalid/synthetic-qr', fallback: true }
         : job.operation === 'capture' ? { order: { id: job.providerOrderId, amount: control.amount, currency: 'CNY', status: control.paid ? 'SUCCESS' : 'CREATED' } }
-          : { invoices: { payment_orders: [{ payment_order_id: job.providerOrderId, amount: control.amount, currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date().toISOString() }] } };
+          : { invoices: { payment_orders: control.invoiceRows ?? [{ payment_order_id: job.providerOrderId, amount: control.amount, currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date().toISOString() }] } };
     return Response.json({ ok: true, httpStatus: 200, isJson: true, creationAttempted: job.operation === 'create', data: { code: 0, data: { biz_code: 0, biz_data: data } } });
   } }) };
   t.mock.method(globalThis, 'fetch', async (url) => {
@@ -620,6 +620,44 @@ test('active checkout starts a rate-limited background check for the authenticat
   assert.equal(confirmed.qrCode, null);
   assert.deepEqual(control.jobs.map((job) => job.operation), ['capture', 'capture', 'invoice']);
   assert.equal(db.prepare("SELECT source FROM payment_events WHERE state='paid'").get().source, 'poll');
+});
+
+test('manual checkout checks a fresh billing row even during the automatic cooldown', async (t) => {
+  const { db, request, create, control } = publicAgentSetup(t);
+  const order = await (await create()).json();
+  const path = `/api/orders/${order.id}/check`;
+  const headers = { Origin: 'https://feedfish.example', Authorization: `Bearer ${order.accessToken}` };
+  const check = (override = {}) => request(path, { method: 'POST', headers: { ...headers, ...override } });
+  const now = Date.now();
+  db.prepare('UPDATE orders SET last_checked_at=? WHERE id=?').run(now, order.id);
+  control.jobs.length = 0;
+
+  assert.equal((await check({ Authorization: '' })).status, 401);
+  assert.equal((await check({ Origin: 'https://unrelated.example' })).status, 403);
+  assert.equal(control.jobs.length, 0);
+
+  const invoice = { payment_order_id: 'synthetic-public-order', amount: '37', currency: 'CNY', payment_order_status: 'SUCCESS', paid_at: new Date(now).toISOString() };
+  for (const row of [
+    { ...invoice, payment_order_id: 'synthetic-another-order' },
+    { ...invoice, amount: '38' },
+    { ...invoice, currency: 'USD' },
+    { ...invoice, payment_order_status: 'PENDING' }
+  ]) {
+    control.invoiceRows = [row];
+    assert.equal((await (await check()).json()).status, 'pending');
+  }
+  assert.equal(db.prepare('SELECT count(*) AS n FROM payment_events').get().n, 0);
+
+  control.invoiceRows = [invoice];
+  const paid = await (await check()).json();
+  assert.equal(paid.status, 'paid');
+  assert.equal(paid.qrCode, null);
+  assert.equal(paid.providerOrderId, undefined);
+  assert.equal(db.prepare('SELECT paid_at FROM orders WHERE id=?').get(order.id).paid_at, now);
+  assert.equal((await (await check()).json()).status, 'paid');
+  assert.equal(control.jobs.length, 5);
+  assert.ok(control.jobs.every((job) => job.operation === 'invoice' && job.waitForBrowser === true && job.providerOrderId === invoice.payment_order_id && job.accountId === 'fixed'));
+  assert.equal(db.prepare("SELECT count(*) AS n FROM payment_events WHERE state='paid'").get().n, 1);
 });
 
 test('public checkout rejects disabled methods, legacy oversized amounts, offline devices and invalid Turnstile before creating', async (t) => {

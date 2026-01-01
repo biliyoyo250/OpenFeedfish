@@ -77,7 +77,15 @@ export class BrowserAgentRelay {
       const limit = maxPaymentAmount(protocol);
       const needsCurrentAgent = selecting || accountId !== this.env.DEEPSEEK_ACCOUNT_ID;
       if (!limit || (needsCurrentAgent && protocol !== PAYMENT_PROTOCOL) || (job.operation === 'create' && job.amountFen > limit)) return rejectJob('AGENT_UPDATE_REQUIRED');
-      if (this.pendingJobs.size) return rejectJob('AGENT_BUSY');
+      if (this.queuedInvoice) return rejectJob('AGENT_BUSY');
+      if (this.pendingJobs.size) {
+        if (job.operation !== 'invoice' || input.waitForBrowser !== true) return rejectJob('AGENT_BUSY');
+        // Reserve one slot for a payer's manual check while the current job finishes.
+        const activeJob = this.pendingJobs.values().next().value;
+        this.queuedInvoice = true;
+        try { await activeJob.done; } finally { this.queuedInvoice = false; }
+        if (this.live('agent')[0]?.deserializeAttachment().connectionId !== activeJob.connectionId) return rejectJob('AGENT_OFFLINE');
+      }
       return this.dispatchPaymentJob(agent, job, selecting ? device : null);
     }
     if (path === '/approve' && request.method === 'POST') return this.ctx.blockConcurrencyWhile(async () => {
@@ -126,12 +134,14 @@ export class BrowserAgentRelay {
   }
   async dispatchPaymentJob(agent, job, selectingDevice) {
     const connectionId = agent.deserializeAttachment().connectionId;
+    let release;
+    const done = new Promise((resolve) => { release = resolve; });
     try {
       // The WebSocket result must be able to run while this request waits.
       const result = await new Promise((resolveJob) => {
         const finish = (value) => { clearTimeout(timer); resolveJob(paymentJobResult(job, value)); };
         const timer = setTimeout(() => finish({ ok: false, code: 'AGENT_TIMEOUT', creationAttempted: job.operation === 'create' }), PAYMENT_RPC_TIMEOUT);
-        this.pendingJobs.set(job.id, { connectionId, job, finish, selecting: !!selectingDevice });
+        this.pendingJobs.set(job.id, { connectionId, job, finish, done, selecting: !!selectingDevice });
         send(agent, job);
       });
       if (!selectingDevice) return reply(result);
@@ -144,7 +154,10 @@ export class BrowserAgentRelay {
         await this.ctx.storage.put('device', { ...device, receivingAccountId: profile.id });
         return reply({ ok: true, receivingAccountId: profile.id });
       });
-    } finally { this.pendingJobs.delete(job.id); }
+    } finally {
+      this.pendingJobs.delete(job.id);
+      release();
+    }
   }
   async keyHash(request) {
     const authorization = request.headers.get('Authorization') || '';

@@ -1,5 +1,5 @@
 import { ApiError, parseAmount, formatAmount, validateOrder, isDemo, hash, accessToken, publicOrder, assertOrigin, readJson, verifyTurnstile } from './lib.js';
-import { providerReady, createPayment } from './provider.js';
+import { providerReady, createPayment, queryPaymentInvoice } from './provider.js';
 import { handleAdmin } from './admin.js';
 import { AGENT_CHECK_INTERVAL, applyPaymentResult, reconcileOrder, reconcileScheduled } from './reconcile.js';
 import { cleanupBrowserLogin } from './browser-login.js';
@@ -32,9 +32,9 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 function json(body, status = 200) {
   return Response.json(body, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', ...(status === 429 ? { 'Retry-After': '60' } : {}) } });
 }
-async function rateLimit(request, env, name, limit, demo) {
-  const ip = request.headers.get('CF-Connecting-IP') || (demo ? 'local' : 'unknown');
-  const now = Date.now(); const bucket = `${name}:${Math.floor(now / 60000)}:${await hash(ip)}`;
+async function rateLimit(request, env, name, limit, demo, orderId) {
+  const subject = orderId || request.headers.get('CF-Connecting-IP') || (demo ? 'local' : 'unknown');
+  const now = Date.now(); const bucket = `${name}:${Math.floor(now / 60000)}:${await hash(subject)}`;
   const row = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, now + 120000).first();
   if (row.count > limit) throw new ApiError(429, 'RATE_LIMITED', '操作有点频繁，请稍等一分钟。');
 }
@@ -102,6 +102,27 @@ async function getOrder(request, env, ctx, id, demo) {
   }
   return json(publicOrder(row));
 }
+
+async function checkOrder(request, env, id, demo) {
+  assertOrigin(request, demo);
+  let row = await loadOrder(request, env, id, demo);
+  if (row.status !== 'pending') return json(publicOrder(row));
+  await rateLimit(request, env, 'manual-check', 15, demo, id);
+  try {
+    if (row.provider_transport === 'agent') {
+      const result = await queryPaymentInvoice(env, row);
+      if (result) {
+        row = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
+        await applyPaymentResult(env, row, result, 'poll');
+      }
+    } else await reconcileOrder(env, row);
+  } catch (error) {
+    if (error?.code === 'AGENT_BUSY') throw new ApiError(503, 'PAYMENT_CHECK_BUSY', '正在核对其他付款，请稍后再试。');
+    throw new ApiError(503, 'PAYMENT_CHECK_UNAVAILABLE', '暂时无法核对付款，请稍后再试。');
+  }
+  return json(publicOrder(await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(id).first()));
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url); const demo = isDemo(request, env);
@@ -113,10 +134,11 @@ export default {
       if (!env.DB) throw new ApiError(503, 'DATABASE_UNAVAILABLE', '服务暂未就绪，请稍后再试。');
       if (Math.random() < 0.02 && ctx?.waitUntil) ctx.waitUntil(env.DB.prepare('DELETE FROM rate_limits WHERE expires_at<?').bind(Date.now()).run().catch(() => {}));
       if (url.pathname === '/api/orders' && request.method === 'POST') return await createOrder(request, env, demo);
-      const match = url.pathname.match(/^\/api\/orders\/([0-9a-f-]{36})(\/demo-pay)?$/);
+      const match = url.pathname.match(/^\/api\/orders\/([0-9a-f-]{36})(\/(?:demo-pay|check))?$/);
       if (match && uuid.test(match[1])) {
         if (!match[2] && request.method === 'GET') return await getOrder(request, env, ctx, match[1], demo);
-        if (match[2] && request.method === 'POST' && demo) {
+        if (match[2] === '/check' && request.method === 'POST') return await checkOrder(request, env, match[1], demo);
+        if (match[2] === '/demo-pay' && request.method === 'POST' && demo) {
           assertOrigin(request, demo); const row = await loadOrder(request, env, match[1], demo);
           if (row.status !== 'pending' || row.expires_at <= Date.now()) throw new ApiError(409, 'ORDER_CLOSED', '该演示订单已关闭。');
           await applyPaymentResult(env, row, { status: 'paid', providerStatus: 'SUCCESS' }, 'demo');

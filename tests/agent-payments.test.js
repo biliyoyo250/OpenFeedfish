@@ -117,3 +117,29 @@ test('relay RPC times out without replay and reports dispatched creation as unce
   const result = await (await pending).json();
   assert.equal(result.code, 'AGENT_TIMEOUT'); assert.equal(result.creationAttempted, true); assert.equal(sent.length, 1); assert.equal(relay.pendingJobs.size, 0);
 });
+
+test('one manual invoice waits for the active browser job and is dispatched once', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sent = [];
+  const attachment = { role: 'agent', connectionId: crypto.randomUUID(), paymentProtocol: 3, expiresAt: Date.now() + 100000 };
+  const ws = { readyState: 1, deserializeAttachment: () => attachment, send: (value) => sent.push(JSON.parse(value)) };
+  const relay = new BrowserAgentRelay({ getWebSockets: () => [ws], storage: { get: async () => ({ expiresAt: Date.now() + 100000 }) } }, { DEEPSEEK_ACCOUNT_ID: 'fixed' });
+  const execute = (job) => relay.fetch(new Request('https://relay.internal/execute', { method: 'POST', body: JSON.stringify(job) }));
+  const capture = { ...base('capture'), providerOrderId: 'synthetic-order' };
+  const invoice = { ...base('invoice'), providerOrderId: 'synthetic-order', waitForBrowser: true };
+  const automatic = execute(capture);
+  for (let i = 0; i < 30 && !relay.pendingJobs.size; i++) await new Promise((resolve) => setImmediate(resolve));
+  const manual = execute(invoice);
+  for (let i = 0; i < 30 && !relay.queuedInvoice; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(relay.queuedInvoice, true);
+  assert.deepEqual(sent.map((job) => job.operation), ['capture']);
+  assert.equal((await (await execute({ ...invoice, id: crypto.randomUUID() })).json()).code, 'AGENT_BUSY');
+
+  relay.pendingJobs.get(capture.id).finish(envelope({ order: { status: 'CREATED' } }));
+  await automatic;
+  assert.deepEqual(sent.map((job) => job.operation), ['capture', 'invoice']);
+  assert.equal(sent[1].waitForBrowser, undefined);
+  relay.pendingJobs.get(invoice.id).finish(envelope({ invoices: { payment_orders: [] } }));
+  assert.equal((await (await manual).json()).ok, true);
+  assert.equal(relay.pendingJobs.size, 0);
+});

@@ -40,7 +40,9 @@ export function paymentJobResult(job, value) {
     const order = source.order;
     data = { order: { status: status(order.status), ...(order.id !== undefined ? { id: text(order.id, 200) } : {}), ...(order.payment_order_id !== undefined ? { payment_order_id: text(order.payment_order_id, 200) } : {}), ...(order.amount !== undefined ? { amount: money(order.amount) } : {}), ...(order.currency !== undefined ? { currency: currency(order.currency) } : {}) } };
   } else if (source && job.operation === 'invoice') {
-    const invoice = source.invoices?.payment_orders?.find((item) => item.payment_order_id === job.providerOrderId);
+    const orders = source.invoices?.payment_orders;
+    if (!Array.isArray(orders)) return { ok: false, code: 'AGENT_PROTOCOL', creationAttempted: false };
+    const invoice = orders.find((item) => item?.payment_order_id === job.providerOrderId);
     data = { invoices: { payment_orders: invoice ? [{ payment_order_id: job.providerOrderId, amount: money(invoice.amount), currency: currency(invoice.currency), payment_order_status: status(invoice.payment_order_status), paid_at: typeof invoice.paid_at === 'string' && invoice.paid_at.length <= 64 && Number.isFinite(Date.parse(invoice.paid_at)) ? invoice.paid_at : null }] : [] } };
   }
   return { ...safe, data: { code: integer(value.data?.code), data: { biz_code: integer(value.data?.data?.biz_code), biz_data: data } } };

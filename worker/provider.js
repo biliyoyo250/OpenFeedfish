@@ -98,6 +98,24 @@ export function mapPaymentResult(data, row) {
   if (!statuses[order.status]) throw new ApiError(502, 'UPSTREAM_STATUS_UNKNOWN', '暂时无法确认付款结果。');
   return { status: statuses[order.status], providerStatus: order.status };
 }
+
+async function paidInvoice(row, credentials, fetcher) {
+  const data = await upstream('/auth-api/v0/users/get_all_invoice', credentials, undefined, fetcher);
+  const orders = data?.invoices?.payment_orders;
+  if (!Array.isArray(orders)) throw new ApiError(502, 'UPSTREAM_ORDER_INVALID', '暂时无法读取收款平台账单。');
+  const invoice = orders.find((item) => item?.payment_order_id === row.provider_order_id);
+  if (invoice?.payment_order_status !== 'SUCCESS' || invoice.currency !== 'CNY' || responseFen(invoice.amount) !== row.amount_fen) return null;
+  const time = typeof invoice.paid_at === 'string' ? Date.parse(invoice.paid_at) : NaN;
+  const paidAt = time >= row.created_at - 300000 && time <= Date.now() + 300000 ? time : null;
+  return { status: 'paid', providerStatus: 'SUCCESS', paidAt };
+}
+
+export function queryPaymentInvoice(env, row) {
+  const accountId = row.provider_account_id || env.DEEPSEEK_ACCOUNT_ID;
+  const fetcher = agentPaymentFetcher({ ...env, DEEPSEEK_ACCOUNT_ID: accountId }, { providerOrderId: row.provider_order_id, waitForBrowser: true });
+  return paidInvoice(row, {}, fetcher);
+}
+
 export async function queryPayment(env, row, fetcher = fetch) {
   const agent = row.provider_transport === 'agent';
   if (row.provider_account_id) env = { ...env, DEEPSEEK_ACCOUNT_ID: row.provider_account_id };
@@ -108,12 +126,8 @@ export async function queryPayment(env, row, fetcher = fetch) {
   // The official invoices UI documents paid_at; capture only guarantees status.
   if (result.status === 'paid' && !row.paid_at) {
     try {
-      const invoices = await upstream('/auth-api/v0/users/get_all_invoice', credentials, undefined, fetcher);
-      const invoice = invoices?.invoices?.payment_orders?.find((item) => item.payment_order_id === row.provider_order_id);
-      if (invoice && invoice.currency === 'CNY' && responseFen(invoice.amount) === row.amount_fen && invoice.payment_order_status === 'SUCCESS' && typeof invoice.paid_at === 'string') {
-        const time = Date.parse(invoice.paid_at);
-        if (Number.isFinite(time) && time >= row.created_at - 300000 && time <= Date.now() + 300000) result.paidAt = time;
-      }
+      const invoice = await paidInvoice(row, credentials, fetcher);
+      if (invoice?.paidAt != null) result.paidAt = invoice.paidAt;
     } catch { /* Successful capture remains authoritative; missing paid_at stays null. */ }
   }
   return result;

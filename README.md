@@ -4,6 +4,42 @@ OpenFeedfish 是一个自托管的 DeepSeek 账户充值页面。访客输入人
 
 Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存账单。访客收款使用部署者在 Windows 或 Linux 上运行的自托管 Chromium。管理员也可以在 Cloudflare Browser Run 上运行账户核验和固定金额测试。项目依赖 DeepSeek 网页的内部接口，上游变更可能影响取码或查单。
 
+## 实机演示
+
+[打开示例站](https://feed.yoyo250.fun/)
+
+### 桌面端（16:9）
+
+![OpenFeedfish 桌面端付款页](docs/images/OpenFeedfish-16x9.png)
+
+### 移动端（9:16）
+
+<img src="docs/images/OpenFeedfish-9x16.png" alt="OpenFeedfish 移动端付款页" width="360">
+
+### 微信内打开付款页
+
+付款页跟随系统切换浅色和深色主题。
+
+| 浅色模式 | 深色模式 |
+| --- | --- |
+| <img src="docs/images/wechat-home-light.jpg" alt="微信内打开付款页的浅色模式" width="240"> | <img src="docs/images/wechat-home-dark.jpg" alt="微信内打开付款页的深色模式" width="240"> |
+
+### 选择昵称与付款方式
+
+昵称与留言均为选填。确认弹窗可以继续匿名或返回填写，在微信内打开时也可以选择使用微信支付或支付宝。
+
+| 匿名或填写昵称 | 微信内选择支付方式 |
+| --- | --- |
+| <img src="docs/images/nickname-prompt.jpg" alt="填写昵称或匿名继续的弹窗" width="240"> | <img src="docs/images/wechat-payment-choice.jpg" alt="微信内的微信支付与支付宝选择弹窗" width="240"> |
+
+### 支付宝待付款与微信跳转
+
+| 支付宝扫码付款 | 跳转微信支付 |
+| --- | --- |
+| <img src="docs/images/alipay-payment-redacted.png" alt="支付宝待付款页面，付款二维码已遮盖" width="240"> | <img src="docs/images/wechat-payment-redirect.jpg" alt="微信支付跳转页面" width="240"> |
+
+支付宝页面展示付款码、有效期和查单入口，微信页面在倒计时后跳转支付。图中订单处于等待付款状态，付款二维码已遮盖。
+
 ## 本地演示
 
 安装 Git 和 Node.js 22.18 或更新版本，从新目录检出并运行。
@@ -26,7 +62,9 @@ npm run dev
 | 浏览器方式 | 运行位置 | 这一版本支持的流程 |
 | --- | --- | --- |
 | 自托管无头 Chromium | 自己的 Windows、Linux 或 VPS | 访客正式取码和查单、管理员测试、实时登录和手动验证 |
-| Cloudflare 托管浏览器（Browser Run） | Cloudflare，从 Worker 的 `BROWSER` 绑定启动 | 管理员诊断、固定账户核验及 1 CNY 测试订单。访客取码应使用自托管执行端 |
+| Cloudflare 托管浏览器（Browser Run） | Cloudflare，从 Worker 的 `BROWSER` 绑定启动 | 管理员诊断、固定账户核验及 1 CNY 测试订单 |
+
+Browser Run使用WARP IP，易卡在人机交互验证码，生产环境中访客取码应使用自托管执行端
 
 ### 1. 创建 D1 并设置各项绑定
 
@@ -39,7 +77,13 @@ npx wrangler whoami
 npx wrangler d1 create feedfish
 ```
 
-编辑根目录 `wrangler.jsonc`。把新数据库的名称和 ID 写入 `d1_databases[0].database_name` 和 `database_id`，保留绑定名 `DB`。如更换数据库名称，同时修改 `package.json` 的 `dev` 脚本和下面的迁移命令。为 Worker 设置 `name`，并把 `pages/wrangler.jsonc` 中 `PAYMENT_API` 的 `service` 改为同一个名称。为 Pages 项目选择可用的名称，同步修改 `pages/wrangler.jsonc` 的 `name` 和 `package.json` 中 `deploy:pages` 的 `--project-name`。两个项目使用同一个 Cloudflare 账户。
+编辑根目录的 `wrangler.jsonc` 和 `pages/wrangler.jsonc`。Worker 和 Pages 使用同一个 Cloudflare 账户。
+
+| 配置项 | 如何填写 |
+| --- | --- |
+| D1 数据库 | 把名称和 ID 写入根配置的 `d1_databases[0].database_name` 和 `database_id`，保留绑定名 `DB`。如更换数据库名称，同时修改 `package.json` 的 `dev` 脚本和下面的迁移命令。 |
+| Worker 名称 | 根配置的 `name` 与 Pages 配置中 `PAYMENT_API` 的 `service` 使用同一个名称。 |
+| Pages 项目名称 | Pages 配置的 `name` 与 `package.json` 中 `deploy:pages` 的 `--project-name` 使用同一个名称。 |
 
 保持 `workers_dev=false` 并通过 Pages 服务绑定调用 Worker。`AGENT_RELAY` 绑定与 Durable Object 迁移用于自托管执行端。第一次部署保持 `LOCAL_DEMO=false`、`PAYMENTS_ENABLED=false`、`BROWSER_LOGIN_ENABLED=false` 和 `LEGACY_CLOUD_TESTS_ENABLED=false`。
 
@@ -59,7 +103,16 @@ npx wrangler pages project create feedfish --production-branch public
 
 在 Cloudflare Zero Trust 创建 Access 应用，保护 `/admin`、`/admin/*` 和 `/api/admin/*`，策略限制到部署者授权的邮箱。用于后台的域名和路径需对应同一 Access 应用 Audience。保护仍可访问的 Pages 默认域名、预览域名和自定义域名的管理入口。若仅使用自定义域名，可以重定向默认域名，并单独保护预览部署。[Pages Access 配置](https://developers.cloudflare.com/pages/platform/known-issues/#enable-access-on-your-pagesdev-domain) · [重定向默认域名](https://developers.cloudflare.com/pages/how-to/redirect-to-custom-domain/)
 
-在 Turnstile 创建组件，允许实际付款页的主机名。在根目录 `wrangler.jsonc` 的 `vars` 填写 `ACCESS_TEAM_DOMAIN`（`https://<团队名>.cloudflareaccess.com`）、`ACCESS_AUD`（Access 应用 Audience）、`ADMIN_EMAILS`（逗号分隔的邮箱白名单）和 `TURNSTILE_SITE_KEY`。以下命令交互式录入 Secret。`ORDER_TOKEN_SECRET` 使用至少 32 个高熵随机字符，`ACCOUNT_ENCRYPTION_KEY` 使用独立生成的 32 个随机字节并用 Base64 编码。Turnstile 的服务端密钥必须与 site key 配对。
+在 Turnstile 创建组件，允许实际付款页的主机名。然后在根目录 `wrangler.jsonc` 的 `vars` 写入以下配置。
+
+| 变量 | 填写内容 |
+| --- | --- |
+| `ACCESS_TEAM_DOMAIN` | `https://<团队名>.cloudflareaccess.com` |
+| `ACCESS_AUD` | Access 应用的 Audience |
+| `ADMIN_EMAILS` | 获准登录的邮箱，多个地址以英文逗号分隔 |
+| `TURNSTILE_SITE_KEY` | 付款页对应的 Turnstile site key |
+
+`ORDER_TOKEN_SECRET` 使用至少 32 个高熵随机字符。`ACCOUNT_ENCRYPTION_KEY` 使用独立生成的 32 个随机字节并用 Base64 编码。`TURNSTILE_SECRET_KEY` 与 site key 配对。依次运行以下命令，按提示录入。
 
 ```sh
 npx wrangler secret put ORDER_TOKEN_SECRET
@@ -80,9 +133,9 @@ npm run deploy:pages -- --branch public
 
 ## 自托管无头 Chromium
 
-用 Windows、Linux 或 VPS 托管浏览器。把示例域名替换为自己的 Pages 站点 HTTPS 源地址。执行端主动出站连接，无需开放入站端口。[自托管执行端详细说明](docs/BROWSER_AGENT.md)
+用 Windows、Linux 或 VPS 托管浏览器。把 `FEEDFISH_SERVER` 设为访客访问付款页的 HTTPS 域名，例如 Pages 项目的自定义域名或 `*.pages.dev` 域名，只填写 `https://域名`。执行端主动出站连接，无需开放入站端口。[自托管执行端详细说明](docs/BROWSER_AGENT.md)
 
-PowerShell（Windows）
+### Windows（PowerShell）
 
 ```powershell
 npm ci
@@ -91,7 +144,9 @@ $env:FEEDFISH_SERVER = 'https://checkout.example.com'
 npm run browser-agent
 ```
 
-Bash（Linux，包含安装 Chromium 所需系统库）
+### Linux（Bash）
+
+以下命令同时安装 Chromium 所需的系统库。
 
 ```sh
 npm ci
@@ -99,6 +154,8 @@ npm run browser:install -- --with-deps
 export FEEDFISH_SERVER=https://checkout.example.com
 npm run browser-agent
 ```
+
+### 配对与上线
 
 1. 登录 `/admin`，输入终端显示的配对码。执行端上线后，打开实时窗口。
 2. 在实时窗口登录要收款的 DeepSeek 账户，按官网提示完成人机验证，再点击“启用当前登录账号”。执行端要持续运行并联网。默认浏览器资料位于执行主机的 `.local/browser-agent/`。
@@ -129,21 +186,35 @@ Browser Run 模式适用于管理员诊断和固定金额测试，使用 Cloudfl
 
 ## 使用
 
-**访客**在充值页输入金额（1–100000 CNY 的整数元），选填昵称和留言，选择支付方式并按提示完成人机验证。扫码付款后，留在原页面等待状态更新。支付应用显示已扣款而页面尚未确认时，请联系收款人核对。
+### 访客
 
-**管理员**在 `/admin` 查看近期账单和浏览器执行端状态。可解绑收款账号以暂停生成新付款码，也可将 `PAYMENTS_ENABLED` 设置为 `false` 并重新部署 Worker。切换账号前先解绑，再用实时窗口登录并启用另一个账户。已有订单仍按创建时的收款账户核对。
+在充值页输入金额（1–100000 CNY 的整数元），选填昵称和留言，选择支付方式并按提示完成人机验证。扫码付款后，留在原页面等待状态更新。支付应用显示已扣款而页面尚未确认时，请联系收款人核对。
+
+### 管理员
+
+在 `/admin` 查看近期账单和浏览器执行端状态。可解绑收款账号以暂停生成新付款码，也可将 `PAYMENTS_ENABLED` 设置为 `false` 并重新部署 Worker。切换账号前先解绑，再用实时窗口登录并启用另一个账户。已有订单仍按创建时的收款账户核对。
 
 ## 常见问题
 
-**为什么提示暂时无法生成付款码？** 检查 `PAYMENTS_ENABLED`、Worker 的订单密钥、配置的支付方式及 Turnstile 的两把密钥。确认执行端在线，浏览器中的 DeepSeek 登录有效，并且后台已启用收款账户。遇到 DeepSeek 的验证提示时，通过后台实时窗口处理。
+### 为什么提示暂时无法生成付款码？
 
-**为什么后台登录后仍返回 403？** 检查 Access 是否覆盖正在访问的域名及管理路径，`ACCESS_TEAM_DOMAIN` 和 `ACCESS_AUD` 是否对应这一个应用，以及登录邮箱是否同时获 Access 策略和 `ADMIN_EMAILS` 允许。
+检查 `PAYMENTS_ENABLED`、Worker 的订单密钥、配置的支付方式及 Turnstile 的两把密钥。确认执行端在线，浏览器中的 DeepSeek 登录有效，并且后台已启用收款账户。遇到 DeepSeek 的验证提示时，通过后台实时窗口处理。
 
-**付款成功后为什么还显示待确认？** Worker 通过轮询和每分钟定时任务查单。若页面显示订单状态不确定（`unknown`），请核对 DeepSeek 官方账单，再决定后续操作。遇到已扣款或结果不确定的订单，请勿重复付款。
+### 为什么后台登录后仍返回 403？
 
-**需要 DeepSeek API Key 或支付回调吗？** 自托管执行端通过专用浏览器登录 DeepSeek 账户。订单由本项目主动查单，无需填写 DeepSeek API Key 或配置支付回调。
+检查 Access 是否覆盖正在访问的域名及管理路径，`ACCESS_TEAM_DOMAIN` 和 `ACCESS_AUD` 是否对应这一个应用，以及登录邮箱是否同时获 Access 策略和 `ADMIN_EMAILS` 允许。
 
-**设备重启后需要重新配对吗？** 正常重启会复用保存在原主机的配对信息和浏览器资料。配对到期、被撤销或更换设备时，应使用 `--pair`。请勿分享、提交或上传浏览器资料目录。
+### 付款成功后为什么还显示待确认？
+
+Worker 通过轮询和每分钟定时任务查单。若页面显示订单状态不确定（`unknown`），请核对 DeepSeek 官方账单，再决定后续操作。遇到已扣款或结果不确定的订单，请勿重复付款。
+
+### 需要 DeepSeek API Key 或支付回调吗？
+
+自托管执行端通过专用浏览器登录 DeepSeek 账户。订单由本项目主动查单，无需填写 DeepSeek API Key 或配置支付回调。
+
+### 设备重启后需要重新配对吗？
+
+正常重启会复用保存在原主机的配对信息和浏览器资料。配对到期、被撤销或更换设备时，应使用 `--pair`。请勿分享、提交或上传浏览器资料目录。
 
 ## 安全报告
 

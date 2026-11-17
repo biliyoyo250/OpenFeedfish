@@ -28,7 +28,7 @@ Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存�
 
 昵称与留言均为选填。确认弹窗可以继续匿名或返回填写，在微信内打开时也可以选择使用微信支付或支付宝。
 
-| 匿名或填写昵称 | 微信内选择支付方式 |
+| 匿名或填写昵称 | 微信内置浏览器判断 |
 | --- | --- |
 | <img src="docs/images/nickname-prompt.jpg" alt="填写昵称或匿名继续的弹窗" width="240"> | <img src="docs/images/wechat-payment-choice.jpg" alt="微信内的微信支付与支付宝选择弹窗" width="240"> |
 

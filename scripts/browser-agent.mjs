@@ -28,13 +28,14 @@ export function closeFailure(code) {
   return code === AGENT_CLOSE.REVOKED ? 'DEVICE_REVOKED' : code === AGENT_CLOSE.DEVICE_EXPIRED ? 'DEVICE_EXPIRED' : null;
 }
 export function agentFailureMessage(code) {
+  if (code === 'INVALID_SERVER') return '请将 FEEDFISH_SERVER 设为站点的 HTTPS 源地址。本地开发可使用 HTTP 回环地址。';
   if (['DEVICE_REVOKED', 'DEVICE_NOT_PAIRED', 'DEVICE_DENIED', 'DEVICE_EXPIRED'].includes(code)) return `设备配对已解除、失效或被替换（${code}）。请运行 npm run browser-agent -- --pair 并在后台重新配对；浏览器登录资料保留。`;
   if (code === 'DEVICE_BUSY') return '同一设备已有服务连接（DEVICE_BUSY）。请保留一个运行实例，再重启此服务。';
   if (code === 'EDGE_FORBIDDEN') return 'Cloudflare 入口拒绝控制连接（HTTP 403 · EDGE_FORBIDDEN），不能据此判定设备已解除配对。请检查 Worker 入口与网络策略。';
   if (['PAIRING_EXPIRED', 'PAIRING_BUSY'].includes(code)) return `配对未完成（${code}）。准备好后台后运行 npm run browser-agent -- --pair，使用新配对码。`;
   if (['HANDSHAKE_REDIRECT', 'HANDSHAKE_DENIED'].includes(code)) return `控制连接未能鉴权（${code}），请检查 Worker 入口和路由配置。`;
   if (code === 'AGENT_START_FAILED') return '浏览器服务未能启动（AGENT_START_FAILED）。请检查浏览器安装、独立 profile 是否被其他实例占用及系统依赖。首次安装命令为 npm run browser:install。';
-  return `浏览器服务未能继续（${code === 'INVALID_SERVER' ? code : 'SERVER_UNAVAILABLE'}），请检查服务地址和网络后重试。`;
+  return '浏览器服务未能继续（SERVER_UNAVAILABLE），请检查服务地址和网络后重试。';
 }
 export async function privateDirectory(directory) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -47,7 +48,8 @@ export async function privateDirectory(directory) {
   } else await chmod(directory, 0o700);
 }
 export function serverOrigin(value) {
-  const url = new URL(value);
+  let url;
+  try { url = new URL(value); } catch { throw new Error('INVALID_SERVER'); }
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash || (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)))) throw new Error('INVALID_SERVER');
   return url.origin;
 }
@@ -214,7 +216,7 @@ async function browser(directory) {
 }
 
 export async function runAgent() {
-  const origin = serverOrigin(process.env.FEEDFISH_SERVER || 'https://feedfish.example');
+  const origin = serverOrigin(process.env.FEEDFISH_SERVER);
   const directory = resolve(process.env.FEEDFISH_AGENT_DIR || join(root, '.local', 'browser-agent'));
   await privateDirectory(directory);
   let device;

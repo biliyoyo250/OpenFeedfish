@@ -330,7 +330,9 @@ test('admin errors never echo credential-related exception text or unknown diagn
 });
 
 test('loopback receiver enforces Host, Origin, state and one callback; forwards only code in a fragment', async () => {
-  const state = 'a'.repeat(43); const receiver = await createReceiver({ state, ttlMs: 10000 }); const local = new URL(receiver.receiverUrl);
+  const serverUrl = 'https://feedfish.example'; const state = 'a'.repeat(43);
+  await assert.rejects(createReceiver({ serverUrl: 'http://feedfish.example' }), /INVALID_SERVER/);
+  const receiver = await createReceiver({ serverUrl, state, ttlMs: 10000 }); const local = new URL(receiver.receiverUrl);
   try {
     const forgedHost = await new Promise((accept, reject) => {
       const request = httpRequest({ hostname: local.hostname, port: local.port, path: '/', headers: { Host: 'evil.example' } }, (response) => { response.resume(); accept(response.statusCode); });
@@ -341,7 +343,7 @@ test('loopback receiver enforces Host, Origin, state and one callback; forwards 
     const start = await fetch(local);
     const body = await start.text();
     const link = body.match(/href="(https:\/\/feedfish\.example\/admin#[^"]+)"/)[1].replace(/&amp;/g, '&');
-    const target = new URL(link); assert.equal(target.origin, 'https://feedfish.example'); assert.equal(target.search, '');
+    const target = new URL(link); assert.equal(target.origin, serverUrl); assert.equal(target.search, '');
     assert.equal(new URLSearchParams(target.hash.slice(1)).get('connect_state'), state);
     assert.equal((await fetch(new URL('/oauth/callback?state=wrong&code=code', local), { redirect: 'manual' })).status, 400);
     const callback = new URL('/oauth/callback', local); callback.searchParams.set('state', state); callback.searchParams.set('code', 'one-time-code');

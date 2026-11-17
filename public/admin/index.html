@@ -106,7 +106,7 @@
 
     <details class="panel session-panel" aria-labelledby="session-title"><summary>备用账户连接（Cloudflare）</summary>
       <div class="panel-heading"><h2 id="session-title">连接 DeepSeek 账户</h2><a class="official-link" href="https://platform.deepseek.com/top_up" target="_blank" rel="noopener noreferrer">DeepSeek 官网 <span aria-hidden="true">↗</span></a></div>
-      <p class="section-description">在本机运行 <code>npm run connect-account</code>，打开显示的本机地址，点击“连接 DeepSeek”。官方授权完成后自动返回，凭证由 Cloudflare 加密保存。</p>
+      <p class="section-description">将 <code>FEEDFISH_SERVER</code> 设为本管理后台所在站点的 HTTPS 源地址，再在本机运行 <code>npm run connect-account</code>。打开显示的本机地址，点击“连接 DeepSeek”。官方授权完成后自动返回，凭证由 Cloudflare 加密保存。</p>
       <div class="login-actions"><button id="login-start" class="button primary" type="button" disabled>等待本机连接</button><button id="retry-button" class="button" type="button" hidden>重试账户核验</button><button id="login-cancel" class="button subtle" type="button" hidden>清除暂存凭证</button></div>
       <p id="login-state" class="field-help" role="status">本机仅接收一次性授权码，无需复制 Cookie 或 Token。</p>
       <p class="small muted">也可<a href="/admin/receiver.mjs">下载独立助手</a>后使用 Node.js 运行。</p>

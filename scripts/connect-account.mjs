@@ -3,9 +3,13 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const adminOrigin = 'https://feedfish.example';
 const responseHeaders = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
-export async function createReceiver({ state = randomBytes(32).toString('base64url'), ttlMs = 600000 } = {}) {
+export async function createReceiver({ serverUrl = process.env.FEEDFISH_SERVER, state = randomBytes(32).toString('base64url'), ttlMs = 600000 } = {}) {
+  let adminUrl;
+  try { adminUrl = new URL(serverUrl); } catch { throw new Error('INVALID_SERVER'); }
+  const loopback = adminUrl.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(adminUrl.hostname);
+  if (adminUrl.username || adminUrl.password || adminUrl.pathname !== '/' || adminUrl.search || adminUrl.hash || (adminUrl.protocol !== 'https:' && !loopback)) throw new Error('INVALID_SERVER');
+  const adminOrigin = adminUrl.origin;
   if (!/^[A-Za-z0-9_-]{43}$/.test(state)) throw new Error('Invalid receiver state');
   let origin, consumed = false;
   const expiresAt = Date.now() + ttlMs;
@@ -47,12 +51,15 @@ export async function createReceiver({ state = randomBytes(32).toString('base64u
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   if (process.argv.includes('--help')) {
-    process.stdout.write('运行 npm run connect-account，在侧边栏打开输出的本机地址并点击“连接 DeepSeek”。官方授权完成后自动返回喂鱼后台。接收器只转交一次授权码，不读取 Cookie 或密码，10 分钟后自动退出。\n');
+    process.stdout.write('先将 FEEDFISH_SERVER 设为站点的 HTTPS 源地址，再运行 npm run connect-account。打开输出的本机地址并点击“连接 DeepSeek”。官方授权完成后自动返回管理后台。接收器只转交一次授权码，10 分钟后自动退出。\n');
   } else {
     try {
       const receiver = await createReceiver();
       process.stdout.write(`本机连接地址：${receiver.receiverUrl}\n请在侧边栏打开并点击“连接 DeepSeek”，官方授权完成后自动返回后台。\n请保持终端运行；接收器只转交一次授权码，不读取 Cookie 或密码，10 分钟后自动退出。\n`);
       process.once('SIGINT', () => { receiver.server.close(); });
-    } catch { process.stderr.write('无法启动本机接收器，请确认 Node.js 可用后重试。\n'); process.exitCode = 1; }
+    } catch (error) {
+      process.stderr.write(error.message === 'INVALID_SERVER' ? '请将 FEEDFISH_SERVER 设为站点的 HTTPS 源地址。\n' : '无法启动本机接收器，请确认 Node.js 可用后重试。\n');
+      process.exitCode = 1;
+    }
   }
 }

@@ -2,7 +2,7 @@
 
 OpenFeedfish 是一个自托管的 DeepSeek 账户充值页面。访客输入人民币金额，选择微信支付或支付宝，生成付款二维码。付款后，页面显示由后端核对的订单状态。收款账户由部署者在管理后台设置。
 
-Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存账单。访客收款使用部署者在 Windows 或 Linux 上运行的自托管 Chromium。管理员也可以在 Cloudflare Browser Run 上运行账户核验和固定金额测试。项目依赖 DeepSeek 网页的内部接口，上游变更可能影响取码或查单。
+Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存账单。访客收款使用部署者在 Windows 或 Linux 上运行的自托管 Chromium。管理员也可以在 Cloudflare Browser Run 上运行账户核验和固定金额测试。项目依赖 DeepSeek 网页的内部接口，上游变更可能影响取码或查单
 
 ## 实机演示
 

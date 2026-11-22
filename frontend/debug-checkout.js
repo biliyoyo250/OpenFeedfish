@@ -12,7 +12,7 @@ const debugConfig = {
   paymentMethods: ['wechat', 'alipay'],
 };
 
-export function createDebugCheckout(saved) {
+export function createDebugCheckout(saved, { readOwner } = {}) {
   const expiresAt = Date.parse(saved?.expiresAt);
   let row = saved?.accessToken === accessToken && Number.isFinite(expiresAt) ? {
     id: saved.id,
@@ -25,8 +25,12 @@ export function createDebugCheckout(saved) {
     payment_url: saved.paymentMethod === 'alipay' ? paymentUrl : null,
   } : null;
 
-  function fetch(path, { method = 'GET', body, headers } = {}) {
-    if (method === 'GET' && path === '/api/config') return Response.json(debugConfig);
+  async function fetch(path, { method = 'GET', body, headers } = {}) {
+    if (method === 'GET' && path === '/api/config') {
+      let owner;
+      try { owner = await readOwner?.(); } catch { /* Debug checkout also works when the public profile cannot be read. */ }
+      return Response.json({ ...debugConfig, owner });
+    }
     if (method === 'POST' && path === '/api/orders') {
       try {
         const { amountFen, paymentMethod } = validateOrder(JSON.parse(body));

@@ -7,6 +7,7 @@ import { cleanupAuthorization } from './authorization.js';
 import { cleanupPendingAuthorization } from './pending-authorization.js';
 import { handleAgentPublic, agentRequest } from './browser-agent.js';
 import { maxPaymentAmount, PAYMENT_PROTOCOL } from '../shared/agent-payment-protocol.js';
+import { readOwnerSettings, publicOwnerSettings } from './owner-settings.js';
 export { BrowserAgentRelay } from './browser-agent-relay.js';
 
 const localSecret = 'feedfish-local-demo-not-valid-in-production';
@@ -14,12 +15,20 @@ const secretFor = (env, demo) => demo ? localSecret : env.ORDER_TOKEN_SECRET;
 async function paymentConfig(env, demo) {
   const paymentMethods = demo ? ['wechat', 'alipay'] : (env.PUBLIC_PAYMENT_METHODS || 'wechat,alipay').split(',').map((value) => value.trim()).filter((value, index, all) => ['wechat', 'alipay'].includes(value) && all.indexOf(value) === index);
   const { turnstileEnabled, turnstileConfigured } = await readTurnstileSettings(env, demo);
-  const config = { currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileEnabled, turnstileSiteKey: turnstileEnabled ? env.TURNSTILE_SITE_KEY || '' : '', demo, paymentMethods, paymentsEnabled: demo || env.PAYMENTS_ENABLED === 'true', paymentsAvailable: demo };
+  const ownerSettings = await readOwnerSettings(env, demo);
+  let browserStatus = {};
+  if (!demo && env.AGENT_RELAY) {
+    try {
+      const response = await agentRequest(env, '/status');
+      if (response.ok) browserStatus = await response.json();
+    } catch { /* The saved owner settings remain available while the browser is offline. */ }
+  }
+  const config = { currency: 'CNY', minAmount: '1.00', maxAmount: '100000.00', amountStep: '1.00', turnstileEnabled, turnstileSiteKey: turnstileEnabled ? env.TURNSTILE_SITE_KEY || '' : '', demo, paymentMethods, paymentsEnabled: demo || env.PAYMENTS_ENABLED === 'true', paymentsAvailable: demo, owner: publicOwnerSettings(ownerSettings, browserStatus.profile) };
   let accountId = demo ? null : env.DEEPSEEK_ACCOUNT_ID || null;
   if (demo || !config.paymentsEnabled || !paymentMethods.length || env.ORDER_TOKEN_SECRET?.length < 32 || !env.ORDER_TOKEN_SECRET || (turnstileEnabled && !turnstileConfigured)) return { config, accountId };
   if (env.PUBLIC_PAYMENT_TRANSPORT === 'agent') {
     try {
-      const response = await agentRequest(env, '/status'); const status = response.ok ? await response.json() : {};
+      const status = browserStatus;
       const limit = maxPaymentAmount(status.paymentProtocol);
       accountId = status.receivingAccountId || null;
       config.maxAmount = formatAmount(limit || 10000000);

@@ -87,6 +87,30 @@
       <p id="admin-profile-message" class="field-help" role="status"></p>
       <div class="admin-access"><p id="admin-identity" class="identity-note">Cloudflare Access · 管理入口</p><span id="access-state" class="access-badge">正在确认身份</span></div>
     </section>
+    <section class="panel session-panel" aria-labelledby="owner-settings-title">
+      <div class="panel-heading"><h2 id="owner-settings-title">投喂页主人信息</h2></div>
+      <form id="owner-settings-form">
+        <fieldset id="owner-settings-fields" disabled>
+          <div class="owner-settings-grid">
+            <div>
+              <label for="owner-nickname">主人昵称 <span class="optional-label">选填</span></label>
+              <input id="owner-nickname" name="nickname" maxlength="80" autocomplete="off" placeholder="留空使用 DeepSeek 账号昵称" aria-describedby="owner-nickname-help">
+              <p id="owner-nickname-help" class="field-help">显示在投喂页标题和 Bonjour 主页文字中。</p>
+            </div>
+            <div>
+              <label for="owner-homepage-url">主页网址 <span class="optional-label">选填</span></label>
+              <input id="owner-homepage-url" name="homepageUrl" type="url" maxlength="2048" autocomplete="url" placeholder="https://bonjour.bio/你的主页" aria-describedby="owner-homepage-help">
+              <p id="owner-homepage-help" class="field-help">支持 Bonjour、博客、GitHub 等网页。留空显示开发者 MirageBIN 的 Bonjour 主页。</p>
+            </div>
+            <div id="owner-homepage-description-field" class="wide" hidden>
+              <label for="owner-homepage-description">这个网址要显示什么文字？</label>
+              <input id="owner-homepage-description" name="homepageDescription" maxlength="80" autocomplete="off" placeholder="博客、GitHub主页">
+            </div>
+          </div>
+          <div class="form-bottom"><p id="owner-settings-status" class="field-help" role="status">正在读取页面设置…</p><button id="owner-settings-save" class="button primary" type="submit">保存主人信息</button></div>
+        </fieldset>
+      </form>
+    </section>
     <section class="panel session-panel" aria-labelledby="agent-title">
       <div class="panel-heading"><h2 id="agent-title">自托管浏览器</h2><span id="agent-status" class="status-badge neutral">正在检查</span></div>
       <p class="section-description">Windows / Linux 运行 <code>npm run browser-agent</code>，使用服务端显示的配对码连接。上线后点击“打开实时窗口”，浏览器画面会显示在本页；登录与官方验证码在画面中操作。</p>

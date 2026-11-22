@@ -13,6 +13,7 @@ import { agentRequest, agentViewer } from './browser-agent.js';
 import { agentPaymentFetcher } from './agent-payments.js';
 import { reconcileOrder } from './reconcile.js';
 import { PROFILE_AVATAR_ORIGINS } from '../shared/account-profile.js';
+import { readOwnerSettings, validateOwnerSettings } from './owner-settings.js';
 const contentSecurityPolicy = (socketOrigin = '') => `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: ${PROFILE_AVATAR_ORIGINS.join(' ')}; connect-src 'self'${socketOrigin}; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`;
 const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': contentSecurityPolicy() };
 const json = (data, status = 200) => Response.json(data, { status, headers });
@@ -45,7 +46,8 @@ export async function handleAdmin(request, env) {
     const socketOrigin = `${url.protocol === 'https:' ? 'wss' : 'ws'}://${url.host}`;
     return new Response(response.body, { status: response.status, headers: { ...headers, 'Content-Security-Policy': contentSecurityPolicy(` ${socketOrigin}`), 'Content-Type': 'text/html; charset=utf-8' } });
   }
-  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, ...await readTurnstileSettings(env, identity.demo), legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/session' && request.method === 'GET') return json({ email: identity.email, demo: identity.demo, ownerSettings: await readOwnerSettings(env, identity.demo), ...await readTurnstileSettings(env, identity.demo), legacyPaymentTestingAvailable: !identity.demo && env.LEGACY_CLOUD_TESTS_ENABLED === 'true', authorizationAvailable: !identity.demo && !!env.ACCOUNT_ENCRYPTION_KEY, authorization: identity.demo ? null : await authorizationState(env, identity), pendingAuthorization: identity.demo ? null : await pendingAuthorizationState(env, identity), expectedAccountId: identity.demo ? 'demo-fixed-account' : env.DEEPSEEK_ACCOUNT_ID || null, account: identity.demo ? demoAccount : await accountState(env) });
+  if (path === '/api/admin/settings/owner' && request.method === 'GET') return json(await readOwnerSettings(env, identity.demo));
   if (path === '/api/admin/browser-agent/status' && request.method === 'GET') return identity.demo ? json({ configured: false, online: false, demo: true, profile: null, profileUpdatedAt: null }) : agentRequest(env, '/status');
   if (path === '/api/admin/account/agent-payment/status' && request.method === 'GET') return json({ order: identity.demo ? null : await readAgentTestOrder(env, new URL(request.url).searchParams.get('id')) });
   if (path === '/api/admin/browser-agent/socket' && request.method === 'GET' && !identity.demo) { assertOrigin(request, false); return agentViewer(request, env, identity); }
@@ -74,6 +76,14 @@ export async function handleAdmin(request, env) {
   const limit = await env.DB.prepare('INSERT INTO rate_limits (bucket,count,expires_at) VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1 RETURNING count').bind(bucket, Date.now() + 120000).first();
   if (limit.count > 6) throw new ApiError(429, 'RATE_LIMITED', '操作过于频繁，请稍后重试。');
   const body = await readJson(request); const now = Date.now();
+  if (path === '/api/admin/settings/owner') {
+    const settings = validateOwnerSettings(body);
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO owner_settings (singleton,nickname,homepage_url,homepage_description) VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET nickname=excluded.nickname,homepage_url=excluded.homepage_url,homepage_description=excluded.homepage_description').bind(settings.nickname, settings.homepageUrl, settings.homepageDescription),
+      env.DB.prepare('INSERT INTO admin_audit (event,actor,created_at) VALUES (?,?,?)').bind('owner_settings_updated', identity.email, now),
+    ]);
+    return json(settings);
+  }
   if (path === '/api/admin/settings/turnstile') {
     if (typeof body?.enabled !== 'boolean') throw new ApiError(400, 'INVALID_TURNSTILE_SETTING', '请选择开启或关闭人机验证码。');
     const { turnstileConfigured } = await readTurnstileSettings(env);

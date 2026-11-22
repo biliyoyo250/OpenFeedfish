@@ -31,17 +31,17 @@ button:disabled { cursor: default; opacity: .45; }
 a { color: var(--primary); }
 a:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--primary); outline-offset: 4px; }
 [hidden] { display: none !important; }
-.admin-header { display: flex; align-items: center; gap: 36px; padding: 30px 36px; }
+.admin-header { display: flex; align-items: center; gap: 36px; padding: 32px 36px; }
 .admin-header a { color: var(--on-surface); text-decoration: none; white-space: nowrap; }
 .brand { display: inline-flex; align-items: center; gap: 8px; font-size: 24px; line-height: 1.25; font-weight: 700; }
 .brand picture { flex: none; width: 42px; height: 42px; }
-.brand img { display: block; width: 100%; height: 100%; transform: scale(1.3); }
+.brand img { display: block; width: 100%; height: 100%; transform: scale(1.65); }
 .admin-nav, .admin-header-actions { display: flex; align-items: center; gap: 32px; }
 .admin-header-actions { margin-left: auto; }
-.admin-nav a, .admin-header-actions a { display: grid; align-items: center; min-height: 44px; font-size: 18px; }
-.admin-nav a[aria-current="page"] { color: var(--primary); }
+.admin-nav a, .admin-header-actions a { display: grid; align-items: center; min-height: 44px; font-size: 18px; font-weight: 600; }
+.admin-nav a[aria-current="page"] { color: var(--on-surface); }
 .admin-header a:hover { color: var(--primary); }
-.admin-layout { width: min(1080px, calc(100% - 72px)); margin: 4px auto 48px; }
+.admin-layout { width: min(1080px, calc(100% - 72px)); margin: 0 auto 48px; }
 h2 { font-size: 20px; font-weight: 500; margin: 0; line-height: 1.5; }
 .admin-access { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
 .identity-note { margin: 0; font-size: 12px; line-height: 1.8; color: var(--muted); overflow-wrap: anywhere; }
@@ -69,6 +69,7 @@ a.overview-card:hover { background: var(--surface); border-color: var(--outline)
 .profile-card strong { flex: 1; min-width: 0; font-size: 24px; line-height: 1.35; overflow-wrap: anywhere; }
 .admin-avatar { flex: none; width: 50px; height: 50px; border-radius: 50%; object-fit: cover; background: var(--surface-high); }
 .turnstile-card { grid-area: 3 / 1 / 4 / 2; align-content: center; }
+.turnstile-card .overview-card-heading { min-height: 32px; }
 .admin-switch {
   position: relative;
   flex: none;
@@ -91,6 +92,8 @@ a.overview-card:hover { background: var(--surface); border-color: var(--outline)
 .payment-card[open] summary::after { transform: rotate(225deg); }
 .payment-card .field-help { margin: 16px 0; }
 .payment-card .field-help:empty, #admin-profile-message:empty { display: none; }
+.payment-card .agent-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.payment-card .agent-actions .button { min-width: 0; white-space: normal; }
 .recent-card { grid-area: 2 / 2 / 5 / 3; display: flex; flex-direction: column; }
 .overview-link { text-decoration: none; font-size: 13px; white-space: nowrap; }
 .overview-link:hover { text-decoration: underline; }
@@ -192,8 +195,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .noscript { text-align: center; color: var(--error); font-size: 13px; padding: 20px; }
 
 @media (prefers-color-scheme: dark) {
-  :root { --background: #14151a; --surface: #1f2029; --surface-high: #292b36; --on-surface: #e4e1e9; --muted: #b5b3c2; --outline: #767683; --line: #3f414d; --primary: #bbc4ff; --on-primary: #222d60; --primary-container: #343f72; --on-primary-container: #e0e4ff; --neutral-container: #32323d; --warning: #e7cc85; --warning-container: #3c321a; --error: #ffb4ab; --error-container: #4c2527; }
-  .admin-switch[aria-checked="true"] { background: #664fa0; }
+  :root { --background: #121318; --surface: #1f2029; --surface-high: #292b36; --on-surface: #e6e6e6; --muted: #b5b3c2; --outline: #767683; --line: #3f414d; --primary: #bbc4ff; --on-primary: #222d60; --primary-container: #343f72; --on-primary-container: #e0e4ff; --neutral-container: #32323d; --warning: #e7cc85; --warning-container: #3c321a; --error: #ffb4ab; --error-container: #4c2527; }
+  .admin-switch[aria-checked="true"] { background: #6750a4; }
   .button.primary:hover:not(:disabled) { box-shadow: inset 0 0 0 40px #0000000c; }
 }
 @media (max-width: 880px) {

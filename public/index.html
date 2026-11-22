@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="为 DeepSeek 账户充值。">
+  <meta name="description" content="投喂鲸鲸，款项直接充入 DeepSeek 开放平台。">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#fbfaff" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#121318" media="(prefers-color-scheme: dark)">
-  <title>喂鱼</title>
+  <meta name="theme-color" content="#f7f8fc" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151517" media="(prefers-color-scheme: dark)">
+  <title>FeedFish · 喂鲸鲸</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml" sizes="any">
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
@@ -15,81 +15,103 @@
 <body>
   <main class="page">
     <p id="debug-notice" class="debug-notice" role="status" hidden>正在调试模式，不会触发真实交易</p>
-    <div id="hero" class="hero">
+    <header id="hero" class="hero">
+      <div class="hero-copy">
+        <h1>给鲸鲸投喂</h1>
+        <a href="https://github.com/biliyoyo250/OpenFeedfish" target="_blank" rel="noopener noreferrer">OpenFeedfish</a>
+      </div>
       <div class="character-controls">
         <button id="fish-button" class="character-button" type="button" aria-label="和小鱼打个招呼">
-          <img id="fish-image" src="/assets/DSniang1.png" width="120" height="120" alt="" draggable="false">
+          <img id="fish-image" src="/assets/DSniang1.png" width="84" height="84" alt="" draggable="false">
         </button>
         <button id="sound-toggle" class="icon-button" type="button" aria-label="静音" aria-pressed="false">
           <svg class="sound-on" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5Z"/><path d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg>
           <svg class="sound-off" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 5-6 4H2v6h3l6 4V5Zm5 4 6 6m0-6-6 6"/></svg>
         </button>
       </div>
-      <h1>喂鱼</h1>
       <p id="fish-status" class="sr-only" role="status" aria-live="polite"></p>
-    </div>
-
+    </header>
     <p id="demo-notice" class="notice" hidden>本地演示 · 不会发起真实付款</p>
     <p id="config-error" class="error" role="alert" hidden></p>
 
     <form id="sponsor-form" novalidate>
       <div class="amount-field">
-        <label for="amount">金额</label>
-        <div class="amount-row"><input id="amount" name="amount" type="text" inputmode="numeric" autocomplete="off" value="10" aria-describedby="amount-help" required><span class="currency">CNY</span></div>
+        <label for="amount">投喂额</label>
+        <div class="amount-row">
+          <span class="amount-symbol" aria-hidden="true">¥</span>
+          <input id="amount" name="amount" type="text" inputmode="none" autocomplete="off" maxlength="9" aria-describedby="amount-help" aria-label="投喂金额，人民币元" required>
+          <span class="currency">CNY</span>
+        </div>
       </div>
       <p id="amount-help" class="sr-only">支持 1 至 100000 CNY，仅限整数元。</p>
-
       <fieldset class="payment-field">
         <legend class="sr-only">支付方式</legend>
         <div class="payment-options">
-          <label class="payment-pill"><input type="radio" name="paymentMethod" value="wechat" checked><img class="pay-icon wechat-icon" src="/assets/wechat.svg" width="20" height="20" alt=""><span>微信支付</span><svg class="selection-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg></label>
-          <label class="payment-pill"><input type="radio" name="paymentMethod" value="alipay"><img class="pay-icon alipay-icon" src="/assets/alipay.svg" width="20" height="20" alt=""><span>支付宝</span><svg class="selection-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7"/></svg></label>
+          <label class="payment-pill"><input type="radio" name="paymentMethod" value="wechat" checked><img class="pay-icon" src="/assets/design/wechat.svg" width="28" height="28" alt=""><span>微信支付</span></label>
+          <label class="payment-pill"><input type="radio" name="paymentMethod" value="alipay"><img class="pay-icon" src="/assets/design/alipay.svg" width="28" height="28" alt=""><span>支付宝</span></label>
         </div>
       </fieldset>
-
       <details class="optional-fields">
-        <summary><span>昵称与留言<span class="optional-label">（选填）</span></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5"/></svg></summary>
+        <summary>昵称与留言<span class="optional-label">（选填）</span></summary>
         <div class="optional-content">
           <div class="outlined-field"><label for="nickname">昵称</label><input id="nickname" name="nickname" maxlength="40" autocomplete="nickname"></div>
           <div class="outlined-field"><label for="message">留言</label><textarea id="message" name="message" maxlength="300" rows="3"></textarea></div>
           <span id="message-count" class="sr-only">0 / 300</span>
         </div>
       </details>
-
-      <div id="turnstile"></div>
-      <p id="form-error" class="error" role="alert" hidden></p>
-      <button class="primary-button" id="submit-button" type="submit" disabled><span id="submit-label">生成付款码</span></button>
-      <p class="purpose-note">款项用于 DeepSeek 账户充值。</p>
+      <div class="checkout-controls">
+        <div id="turnstile"></div>
+        <p id="form-error" class="error" role="alert" hidden></p>
+        <div id="amount-keypad" class="amount-keypad" role="group" aria-label="金额数字键盘">
+          <button type="button" data-key="1" aria-label="输入 1">1</button>
+          <button type="button" data-key="2" aria-label="输入 2">2</button>
+          <button type="button" data-key="3" aria-label="输入 3">3</button>
+          <button type="button" data-key="delete" class="key-delete" aria-label="删除一位"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h11a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-7-7 7-7Z"/><path d="m12 9 6 6m0-6-6 6"/></svg></button>
+          <button type="button" data-key="4" aria-label="输入 4">4</button>
+          <button type="button" data-key="5" aria-label="输入 5">5</button>
+          <button type="button" data-key="6" aria-label="输入 6">6</button>
+          <button type="button" data-key="0" class="key-zero" aria-label="输入 0">0</button>
+          <button type="button" data-key="7" aria-label="输入 7">7</button>
+          <button type="button" data-key="8" aria-label="输入 8">8</button>
+          <button type="button" data-key="9" aria-label="输入 9">9</button>
+        </div>
+        <button class="primary-button" id="submit-button" type="submit" disabled><img src="/assets/design/qr.svg" width="30" height="30" alt=""><span id="submit-label">生成付款码</span></button>
+      </div>
     </form>
 
-    <section id="payment-view" hidden aria-live="polite" aria-labelledby="payment-title">
-      <div class="payment-topline"><span id="order-method"></span><span class="status-chip" id="order-status">等待付款</span></div>
-      <h2 id="payment-title">扫码付款</h2>
-      <p class="payment-amount"><span id="order-amount"></span><small>CNY</small></p>
-      <img id="success-animation" class="success-animation" width="160" height="160" alt="" hidden>
-      <div class="qr-frame" id="qr-frame">
-        <img id="qr-image" width="210" height="210" alt="付款二维码" hidden>
-        <div id="qr-overlay" hidden>
-          <canvas id="expired-qr-backdrop" width="19" height="19" aria-hidden="true" hidden></canvas>
-          <span id="result-icon">✓</span>
-          <div id="payment-unavailable" class="payment-unavailable" hidden>
-            <img id="payment-unavailable-image" width="192" height="155" alt="" draggable="false">
-            <p id="payment-unavailable-caption" hidden></p>
+    <section id="payment-view" data-state="pending" hidden aria-live="polite" aria-labelledby="payment-title">
+      <span id="order-status" class="sr-only" role="status">等待付款</span>
+      <div class="payment-art">
+        <img id="success-animation" class="success-animation" src="/assets/design/success-mascot.png" width="198" height="198" alt="" hidden>
+        <div class="qr-frame" id="qr-frame">
+          <img id="qr-image" width="188" height="188" alt="付款二维码" hidden>
+          <div id="qr-overlay" hidden>
+            <canvas id="expired-qr-backdrop" width="19" height="19" aria-hidden="true" hidden></canvas>
+            <span id="result-icon">✓</span>
+            <div id="payment-unavailable" class="payment-unavailable" hidden>
+              <img id="payment-unavailable-image" width="164" height="133" alt="" draggable="false">
+              <p id="payment-unavailable-caption" hidden></p>
+            </div>
           </div>
         </div>
       </div>
-      <p class="payment-instruction"><span id="payment-instruction"></span> <a id="qr-download" class="qr-download" download="feedfish-qr.png" hidden>保存二维码</a></p>
-      <p class="timer" id="countdown"></p>
+      <p class="timer" id="countdown" hidden></p>
+      <h2 id="payment-title">扫一扫上面就行了喵！</h2>
+      <p class="payment-instruction" id="payment-instruction"></p>
+      <p class="payment-amount" id="payment-total"><span id="order-amount"></span><small>CNY</small></p>
+      <div class="payment-meta" id="payment-meta"><span id="order-method"></span><a id="qr-download" download="feedfish-qr.png" hidden>保存二维码</a></div>
       <p id="poll-error" class="error" role="status" hidden></p>
       <div class="payment-actions">
         <a id="payment-link" class="secondary-button" target="_blank" rel="noopener noreferrer" hidden>打开支付宝付款页</a>
         <button id="switch-wechat" type="button" class="secondary-button" hidden>改用微信支付</button>
         <p id="return-merchant" class="return-merchant" hidden>支付成功后请点击"返回商家"，否则回调可能延迟</p>
-        <button id="check-payment" type="button" class="secondary-button">查看付款结果</button>
+        <button id="check-payment" type="button" class="primary-button">手动查看投喂结果</button>
         <p id="manual-check-status" class="manual-check-status" role="status" hidden></p>
         <button id="demo-pay" type="button" class="secondary-button" hidden>模拟支付成功</button>
         <button id="debug-expire" type="button" class="secondary-button" hidden>模拟付款码过期</button>
+        <p id="success-thanks" class="primary-button thank-you" hidden>谢谢投喂喵！</p>
         <button id="start-again" type="button" class="text-button">返回修改</button>
+        <button id="dismiss-payment" type="button" class="text-button" hidden>不喂了 QAQ</button>
       </div>
     </section>
   </main>

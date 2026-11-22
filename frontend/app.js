@@ -4,6 +4,8 @@ import { createDebugCheckout } from './debug-checkout.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
+const amountInput = $('amount');
+const paymentView = $('payment-view');
 const weChatMethod = form.querySelector('input[name="paymentMethod"][value="wechat"]');
 const debugMode = new URLSearchParams(location.search).get('debug') === '1';
 const storageKey = debugMode ? 'feedfish-debug-order-v1' : 'feedfish-order-v1';
@@ -18,7 +20,7 @@ const checkFishMessages = {
 };
 let config, order, timer, countdown, turnstileId, token = '', requestKey, requestFingerprint, polling = false;
 let backoff = 4000;
-let animationKey, handoff, handoffTimer;
+let handoff, handoffTimer;
 let checkingPayment = false, manualChecks = 0, nextCheckAt = 0, checkTimer, checkFish;
 let reminderPulse;
 let submitting = false;
@@ -115,7 +117,7 @@ function updateCheckButton() {
   const remaining = Math.max(0, nextCheckAt - Date.now());
   const seconds = Math.ceil(remaining / 1000);
   button.disabled = checkingPayment || seconds > 0;
-  button.textContent = seconds ? `查看付款结果……${seconds}` : '查看付款结果';
+  button.textContent = seconds ? `手动查看投喂结果……${seconds}` : '手动查看投喂结果';
   if (seconds) checkTimer = setTimeout(updateCheckButton, remaining - (seconds - 1) * 1000);
 }
 
@@ -193,7 +195,7 @@ function renderQrOverlay(pending, unavailable) {
     message('payment-unavailable-caption');
     return;
   }
-  const caption = timedOut && !config.demo ? '你浪费了15分钟盯着我看' : '';
+  const caption = timedOut && !config.demo ? '你盯着人家15分钟？！QAQ' : '';
   if ($('payment-unavailable-caption').textContent !== caption) message('payment-unavailable-caption', caption);
   if (!unavailableImage.hasAttribute('src')) unavailableImage.src = reducedMotion.matches ? unavailablePoster : unavailableAnimation;
 }
@@ -205,10 +207,21 @@ unavailableImage.addEventListener('error', () => {
   if (unavailableImage.getAttribute('src') === unavailableAnimation) unavailableImage.src = unavailablePoster;
 });
 
+function renderUnavailablePayment(expired) {
+  paymentView.dataset.state = expired ? 'expired' : 'failed';
+  $('payment-total').hidden = true;
+  $('payment-meta').hidden = true;
+  $('countdown').hidden = true;
+  $('payment-title').textContent = expired ? '二维码过期力！' : '投喂还没完成喵';
+  $('payment-instruction').textContent = '若已扣款，请找收款人核对喵~';
+  $('start-again').textContent = '再喂一次！';
+  $('dismiss-payment').hidden = false;
+}
+
 function tick() {
   if (order?.status !== 'pending' || handoff) return;
   const seconds = order.paymentState === 'expired' ? 0 : Math.max(0, Math.ceil((Date.parse(order.expiresAt) - Date.now()) / 1000));
-  $('countdown').textContent = seconds ? `付款码有效期 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '正在确认付款结果…';
+  $('countdown').textContent = seconds ? `投喂码有效期 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : '正在确认付款结果…';
   if (!seconds) {
     if (!qrImage.hidden) setQrImage();
     renderQrOverlay(true, true);
@@ -218,9 +231,8 @@ function tick() {
     $('switch-wechat').hidden = true;
     $('demo-pay').hidden = true;
     $('debug-expire').hidden = true;
-    $('payment-instruction').textContent = '';
     $('order-status').textContent = '二维码已过期';
-    $('payment-title').textContent = '付款码已过期';
+    renderUnavailablePayment(true);
   }
 }
 async function renderOrder(verified = true) {
@@ -233,16 +245,17 @@ async function renderOrder(verified = true) {
   const unavailable = pending ? !qrAvailable : order.status === 'expired' || (order.status === 'failed' && !refunded);
   const success = order.status === 'paid' && verified;
   const redirecting = pending && !unavailable && !!handoff;
+  paymentView.dataset.state = redirecting ? 'handoff' : success ? 'paid' : 'pending';
+  $('payment-total').hidden = false;
+  $('payment-meta').hidden = false;
+  $('countdown').hidden = !pending || unavailable || redirecting;
+  $('success-thanks').hidden = !success;
+  $('dismiss-payment').hidden = true;
   $('order-method').textContent = redirecting || order.paymentMethod === 'wechat' ? '微信支付' : '支付宝';
   const showActions = pending && !redirecting;
   const animation = $('success-animation');
-  animation.hidden = (!success && !redirecting) || matchMedia('(prefers-reduced-motion: reduce)').matches;
-  $('qr-frame').hidden = redirecting || (success && !animation.hidden);
-  const nextAnimationKey = `${order.id}:${redirecting ? 'handoff' : 'success'}`;
-  if (!animation.hidden && animationKey !== nextAnimationKey) {
-    animationKey = nextAnimationKey;
-    animation.src = '/assets/bubble-money1.gif';
-  }
+  animation.hidden = !success && !redirecting;
+  $('qr-frame').hidden = redirecting || success;
   $('order-status').textContent = ({ waiting: '等待付款', processing: '正在支付', paid: '支付成功', expired: '二维码已过期', failed: '支付失败', refunded: '已退款', chargeback: '已退单' })[order.paymentState] || ({ pending: '等待付款', paid: '支付成功', expired: '已过期', failed: '未能完成' })[order.status] || '正在确认';
   $('check-payment').hidden = !showActions;
   $('return-merchant').hidden = !showActions;
@@ -263,21 +276,21 @@ async function renderOrder(verified = true) {
   paymentLink.textContent = weChatLink ? '打开付款页' : '打开支付宝付款页';
   renderQrOverlay(pending, unavailable);
   $('start-again').disabled = false;
-  $('start-again').textContent = redirecting ? '跳转支付……3' : pending ? '返回修改' : '再投喂一次';
+  $('start-again').textContent = redirecting ? '跳转支付……3' : pending ? '返回修改' : '再喂一次';
   $('countdown').textContent = '';
   if (redirecting) {
     $('payment-title').textContent = '投喂中';
-    $('payment-instruction').textContent = '谢谢投喂。';
+    $('payment-instruction').textContent = '谢谢投喂喵！';
     return;
   }
   if (pending) {
-    $('payment-title').textContent = '扫码付款';
-    $('payment-instruction').textContent = config.demo ? '演示二维码，不会扣款。' : `使用${order.paymentMethod === 'wechat' ? '微信' : '支付宝'}扫码`;
+    $('payment-title').textContent = '扫一扫上面就行了喵！';
+    $('payment-instruction').textContent = config.demo ? '演示二维码，不会扣款。' : '投喂的款项直接充入 DeepSeek 开放平台变成我的白米饭喵~';
     const { id, qrCode } = order;
     if (qrCode && qrAvailable) {
       const stillScannable = () => order?.id === id && order.status === 'pending' && order.paymentState !== 'expired' && order.qrCode === qrCode && !handoff && Date.parse(order.expiresAt) > Date.now();
       try {
-        const canvas = await QRCode.toCanvas(qrCode, { width: 420, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#19352f', light: '#ffffff' } });
+        const canvas = await QRCode.toCanvas(qrCode, { width: 420, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#151527', light: '#ffffff' } });
         if (stillScannable()) {
           setQrImage(canvas.toDataURL());
           const backdrop = expiredQrBackdrop.getContext('2d');
@@ -309,9 +322,10 @@ async function renderOrder(verified = true) {
     clearTimeout(handoffTimer);
     handoff = null;
     $('result-icon').textContent = order.status === 'paid' ? '✓' : '↻';
-    $('payment-title').textContent = order.status === 'paid' ? (verified ? '投喂成功' : '正在核对') : refunded ? '付款状态已更新' : order.status === 'expired' ? '二维码已过期' : '支付未完成';
-    $('payment-instruction').textContent = order.status === 'paid' ? (verified ? (config.demo ? '演示完成，未发生真实付款。' : '谢谢投喂。') : '正在确认订单状态…') : '若已扣款，请先联系收款人核对。';
+    $('payment-title').textContent = order.status === 'paid' ? (verified ? '投喂成功喵！' : '正在核对') : refunded ? '付款状态已更新' : '投喂还没完成喵';
+    $('payment-instruction').textContent = order.status === 'paid' ? (verified ? (config.demo ? '演示完成，未发生真实付款。' : '投喂的款项直接充入 DeepSeek 开放平台变成我的白米饭喵~') : '正在确认订单状态…') : '若已扣款，请找收款人核对喵~';
   }
+  if (unavailable) renderUnavailablePayment(order.status === 'expired' || order.paymentState === 'expired' || !qrAvailable);
 }
 
 async function applyOrderUpdate(update, force = false) {
@@ -368,6 +382,21 @@ async function checkPayment() {
   }
 }
 $('message').addEventListener('input', () => { $('message-count').textContent = `${$('message').value.length} / 300`; });
+$('amount-keypad').addEventListener('click', (event) => {
+  const key = event.target.closest('button[data-key]')?.dataset.key;
+  if (!key) return;
+  const start = amountInput.selectionStart ?? amountInput.value.length;
+  const end = amountInput.selectionEnd ?? start;
+  const from = key === 'delete' && start === end ? Math.max(0, start - 1) : start;
+  const insert = key === 'delete' ? '' : key;
+  const value = (amountInput.value.slice(0, from) + insert + amountInput.value.slice(end)).replace(/^0+(?=\d)/, '');
+  if (key !== 'delete' && !/^\d{0,6}$/.test(value)) return;
+  amountInput.value = value;
+  const caret = Math.min(value.length, from + insert.length);
+  amountInput.focus({ preventScroll: true });
+  amountInput.setSelectionRange(caret, caret);
+  amountInput.dispatchEvent(new Event('input', { bubbles: true }));
+});
 $('nickname-skip').addEventListener('click', () => nicknameDialog.close('continue'));
 $('nickname-edit').addEventListener('click', () => {
   nicknameDialog.close('edit');
@@ -422,13 +451,15 @@ $('switch-wechat').addEventListener('click', () => {
   const url = weChatPaymentUrl();
   if (url && order.paymentMethod === 'alipay' && !weChatMethod.disabled) void startWeChatPayment(url);
 });
-$('start-again').addEventListener('click', () => {
+function returnToForm() {
   if (handoff) { openPaymentPage(); return; }
   if (order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
   stopPolling(); resetManualCheck(); setQrImage(); order = null; storage.set(null); requestFingerprint = null; requestKey = null;
   renderQrOverlay(true, false);
   $('payment-view').hidden = true; $('success-animation').hidden = true; $('hero').hidden = false; form.hidden = false; message('poll-error'); resetCaptcha(); $('amount').focus();
-});
+}
+$('start-again').addEventListener('click', returnToForm);
+$('dismiss-payment').addEventListener('click', returnToForm);
 $('demo-pay').addEventListener('click', async () => {
   $('demo-pay').disabled = true;
   try {

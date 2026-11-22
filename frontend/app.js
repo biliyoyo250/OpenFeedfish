@@ -5,6 +5,10 @@ import { createDebugCheckout } from './debug-checkout.js';
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
 const amountInput = $('amount');
+const amountField = $('amount-field');
+const keypadPanel = $('keypad-panel');
+const keypadToggle = $('keypad-toggle');
+const compactKeypad = matchMedia('(max-width: 899px), (max-height: 640px), (pointer: coarse)');
 const paymentView = $('payment-view');
 const weChatMethod = form.querySelector('input[name="paymentMethod"][value="wechat"]');
 const debugMode = new URLSearchParams(location.search).get('debug') === '1';
@@ -33,6 +37,49 @@ const expiredQrBackdrop = $('expired-qr-backdrop');
 const unavailableImage = $('payment-unavailable-image');
 const unavailableAnimation = '/assets/payment-peek.webp?v=2';
 const unavailablePoster = '/assets/payment-peek.png';
+function setKeypadOpen(open) {
+  const compact = compactKeypad.matches;
+  $('keypad-amount').textContent = amountInput.value || '0';
+  keypadPanel.hidden = compact && !open;
+  keypadToggle.hidden = !compact;
+  keypadToggle.setAttribute('aria-expanded', String(!keypadPanel.hidden));
+  document.querySelector('.page').classList.toggle('keypad-open', compact && open);
+}
+setKeypadOpen(false);
+compactKeypad.addEventListener('change', () => setKeypadOpen(false));
+amountField.addEventListener('click', () => {
+  if (!compactKeypad.matches) return;
+  setKeypadOpen(true);
+  amountInput.focus({ preventScroll: true });
+});
+keypadToggle.addEventListener('click', (event) => {
+  event.stopPropagation();
+  setKeypadOpen(keypadPanel.hidden);
+  amountInput.focus({ preventScroll: true });
+});
+$('keypad-close').addEventListener('click', () => {
+  setKeypadOpen(false);
+  amountInput.focus({ preventScroll: true });
+});
+amountInput.addEventListener('input', () => { $('keypad-amount').textContent = amountInput.value || '0'; });
+amountInput.addEventListener('keydown', (event) => {
+  if (compactKeypad.matches && keypadPanel.hidden && event.key === 'ArrowDown') {
+    event.preventDefault();
+    setKeypadOpen(true);
+  }
+});
+function dismissKeypadOutside(event) {
+  if (compactKeypad.matches && !amountField.contains(event.target) && !keypadPanel.contains(event.target)) setKeypadOpen(false);
+}
+document.addEventListener('pointerdown', dismissKeypadOutside);
+document.addEventListener('focusin', dismissKeypadOutside);
+document.addEventListener('keydown', (event) => {
+  if (compactKeypad.matches && !keypadPanel.hidden && event.key === 'Escape') {
+    event.preventDefault();
+    setKeypadOpen(false);
+    amountInput.focus({ preventScroll: true });
+  }
+});
 initFish();
 const storage = {
   get() {
@@ -256,6 +303,7 @@ function tick() {
   }
 }
 async function renderOrder(verified = true) {
+  setKeypadOpen(false);
   setQrImage();
   form.hidden = true; $('hero').hidden = true; $('payment-view').hidden = false;
   $('order-amount').textContent = `¥${order.amount}`;
@@ -424,6 +472,7 @@ $('nickname-edit').addEventListener('click', () => {
   $('nickname').focus();
 });
 function chooseDialog(dialog) {
+  setKeypadOpen(false);
   dialog.returnValue = '';
   return new Promise((resolve) => {
     dialog.addEventListener('close', () => resolve(dialog.returnValue), { once: true });
@@ -432,6 +481,7 @@ function chooseDialog(dialog) {
 }
 form.addEventListener('submit', async (event) => {
   event.preventDefault(); message('form-error');
+  setKeypadOpen(false);
   if (submitting) return;
   submitting = true;
   try {
@@ -474,6 +524,7 @@ $('switch-wechat').addEventListener('click', () => {
 function returnToForm() {
   if (handoff) { openPaymentPage(); return; }
   if (order?.status === 'pending' && !window.confirm('返回后仍可能完成这笔付款。若已经付款，请留在此页核对结果；确定返回修改吗？')) return;
+  setKeypadOpen(false);
   stopPolling(); resetManualCheck(); setQrImage(); order = null; storage.set(null); requestFingerprint = null; requestKey = null;
   renderQrOverlay(true, false);
   $('payment-view').hidden = true; $('success-animation').hidden = true; $('hero').hidden = false; form.hidden = false; message('poll-error'); resetCaptcha(); $('amount').focus();

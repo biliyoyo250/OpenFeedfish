@@ -35,12 +35,13 @@
     <p id="config-error" class="error" role="alert" hidden></p>
 
     <form id="sponsor-form" novalidate>
-      <div class="amount-field">
+      <div class="amount-field" id="amount-field">
         <label for="amount">投喂额</label>
         <div class="amount-row">
           <span class="amount-symbol" aria-hidden="true">¥</span>
           <input id="amount" name="amount" type="text" inputmode="none" autocomplete="off" maxlength="9" aria-describedby="amount-help" aria-label="投喂金额，人民币元" required>
           <span class="currency">CNY</span>
+          <button id="keypad-toggle" class="keypad-toggle" type="button" aria-controls="keypad-panel" aria-expanded="false" hidden>键盘</button>
         </div>
       </div>
       <p id="amount-help" class="sr-only">支持 1 至 100000 CNY，仅限整数元。</p>
@@ -62,7 +63,12 @@
       <div class="checkout-controls">
         <div id="turnstile"></div>
         <p id="form-error" class="error" role="alert" hidden></p>
-        <div id="amount-keypad" class="amount-keypad" role="group" aria-label="金额数字键盘">
+        <div id="keypad-panel" class="keypad-panel" hidden>
+          <div class="keypad-heading">
+            <span>投喂额 <strong>¥<output id="keypad-amount">0</output></strong></span>
+            <button id="keypad-close" type="button" aria-label="收起数字键盘">收起 <span aria-hidden="true">⌄</span></button>
+          </div>
+          <div id="amount-keypad" class="amount-keypad" role="group" aria-label="金额数字键盘">
           <button type="button" data-key="1" aria-label="输入 1">1</button>
           <button type="button" data-key="2" aria-label="输入 2">2</button>
           <button type="button" data-key="3" aria-label="输入 3">3</button>
@@ -74,8 +80,9 @@
           <button type="button" data-key="7" aria-label="输入 7">7</button>
           <button type="button" data-key="8" aria-label="输入 8">8</button>
           <button type="button" data-key="9" aria-label="输入 9">9</button>
+          </div>
         </div>
-        <button class="primary-button" id="submit-button" type="submit" disabled><img src="/assets/design/qr.svg" width="30" height="30" alt=""><span id="submit-label">生成付款码</span></button>
+        <button class="primary-button" id="submit-button" type="submit" disabled><img src="/assets/design/qr.svg" width="22" height="22" alt=""><span id="submit-label">生成付款码</span></button>
       </div>
     </form>
 

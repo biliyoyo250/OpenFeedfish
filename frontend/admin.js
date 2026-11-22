@@ -11,9 +11,15 @@ const loginStart = element('login-start');
 const loginCancel = element('login-cancel');
 const turnstileToggle = element('turnstile-toggle');
 const turnstileSettingsPath = '/api/admin/settings/turnstile';
+const ownerSettingsPath = '/api/admin/settings/owner';
+const ownerForm = element('owner-settings-form');
+const ownerFields = element('owner-settings-fields');
+const ownerHomepage = element('owner-homepage-url');
+const ownerDescription = element('owner-homepage-description');
 const entryHash = window.location.hash;
 let session = null;
 let busy = false;
+let ownerSettingsKnown = false;
 const connectionInput = (() => {
   const values = new URLSearchParams(window.location.hash.slice(1));
   if (![...values.keys()].some((key) => key.startsWith('connect_'))) return null;
@@ -70,6 +76,7 @@ function dateLabel(value) {
 
 function updateControls() {
   const writable = Boolean(session && session.demo === false && !busy);
+  ownerFields.disabled = !writable || !ownerSettingsKnown;
   fields.disabled = !writable || Boolean(session?.pendingAuthorization);
   importButton.disabled = fields.disabled;
   const authorizationReady = writable && session.authorizationAvailable;
@@ -100,6 +107,10 @@ function updateControls() {
 function lockAccess() {
   session = null;
   form.reset();
+  ownerForm.reset();
+  ownerSettingsKnown = false;
+  updateOwnerHomepage();
+  element('owner-settings-status').textContent = '登录管理后台后配置主人信息。';
   updateControls();
   element('access-state').textContent = '权限未就绪';
   element('access-error').textContent = '管理入口的 SSO 登录或访问权限尚未就绪。请通过 Cloudflare Access 登录后重新加载此页面，或联系管理员检查访问策略。';
@@ -151,6 +162,15 @@ function renderSession(data) {
     throw new Error('账户状态暂不可用，请稍后重新加载页面。');
   }
   session = data;
+  const owner = data.ownerSettings;
+  ownerSettingsKnown = Boolean(owner && ['nickname', 'homepageUrl', 'homepageDescription'].every(key => typeof owner[key] === 'string'));
+  if (ownerSettingsKnown) {
+    element('owner-nickname').value = owner.nickname;
+    ownerHomepage.value = owner.homepageUrl;
+    ownerDescription.value = owner.homepageDescription;
+    updateOwnerHomepage();
+  }
+  element('owner-settings-status').textContent = !ownerSettingsKnown ? '页面设置暂未读取，请刷新后台。' : data.demo ? '本地演示为只读。' : '保存后在投喂页刷新查看。';
   element('login-state').textContent = data.pendingAuthorization
     ? `会话凭证已加密暂存，可点击“重试账户核验”，有效至 ${dateLabel(data.pendingAuthorization.expiresAt)}。`
     : data.authorization
@@ -308,6 +328,46 @@ turnstileToggle.addEventListener('click', () => {
   const enabled = !session.turnstileEnabled;
   void mutate(turnstileSettingsPath, { enabled }, enabled ? '付款页人机验证码已开启。' : '付款页人机验证码已关闭。');
 });
+
+function updateOwnerHomepage() {
+  ownerHomepage.setCustomValidity('');
+  ownerDescription.setCustomValidity('');
+  let customHomepage = false;
+  try {
+    const url = new URL(ownerHomepage.value.trim());
+    customHomepage = !['bonjour.bio', 'www.bonjour.bio'].includes(url.hostname);
+  } catch {}
+  element('owner-homepage-description-field').hidden = !customHomepage;
+  ownerDescription.required = customHomepage;
+}
+ownerHomepage.addEventListener('input', updateOwnerHomepage);
+ownerForm.addEventListener('submit', event => {
+  event.preventDefault();
+  if (ownerFields.disabled || busy) return;
+  updateOwnerHomepage();
+  const homepageUrl = ownerHomepage.value.trim();
+  if (homepageUrl) {
+    try {
+      const url = new URL(homepageUrl);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+    } catch {
+      ownerHomepage.setCustomValidity('请填写不含用户名或密码的 http 或 https 网页地址。');
+    }
+  }
+  if (!ownerForm.reportValidity()) return;
+  const homepageDescription = ownerDescription.required ? ownerDescription.value.trim() : ownerDescription.value;
+  if (ownerDescription.required && !homepageDescription) {
+    ownerDescription.setCustomValidity('请填写这个网址的描述文字。');
+    ownerDescription.reportValidity();
+    return;
+  }
+  void mutate(ownerSettingsPath, {
+    nickname: element('owner-nickname').value.trim(),
+    homepageUrl,
+    homepageDescription,
+  }, '主人信息已保存，刷新投喂页查看。');
+});
+ownerDescription.addEventListener('input', () => ownerDescription.setCustomValidity(''));
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();

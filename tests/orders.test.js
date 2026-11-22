@@ -19,6 +19,7 @@ import { importSession } from '../worker/admin.js';
 import { startBrowserLogin, completeBrowserLogin, cancelBrowserLogin, browserLoginState, cleanupBrowserLogin, credentialsFromBrowser, browserLoginDiagnostics, browserResourceStatus, browserTaskView, completeBrowserTask } from '../worker/browser-login.js';
 import { cookieHeader } from '../worker/provider.js';
 import { SignJWT, generateKeyPair, exportJWK, createLocalJWKSet } from 'jose';
+import { validateOwnerSettings } from '../worker/owner-settings.js';
 
 function setup({ migrateAdminTests = true } = {}) {
   const db = new DatabaseSync(':memory:'); db.exec(readFileSync(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
@@ -31,6 +32,7 @@ function setup({ migrateAdminTests = true } = {}) {
   if (migrateAdminTests) db.exec(readFileSync(new URL('../migrations/0008_admin_test_orders.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0009_order_receiving_account.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../migrations/0010_turnstile_setting.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../migrations/0011_owner_settings.sql', import.meta.url), 'utf8'));
   const wrap = (sql, values = []) => ({ bind: (...args) => wrap(sql, args), first: async () => db.prepare(sql).get(...values) || null, all: async () => ({results:db.prepare(sql).all(...values)}), run: async () => ({ meta: { changes: db.prepare(sql).run(...values).changes } }) });
   const env = { DB: { prepare: wrap, batch: async (statements) => { db.exec('BEGIN'); try { const result = []; for (const stmt of statements) result.push(await stmt.run()); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; } } }, LOCAL_DEMO: 'true' };
   const request = (path, options = {}) => worker.fetch(new Request(`http://localhost${path}`, options), env);
@@ -44,7 +46,7 @@ function publicAgentSetup(t) {
   const control = { online: true, protocol: 2, receivingAccountId: 'fixed', jobs: [], failure: null, paid: false, amount: '37', siteverifyCalls: 0 };
   env.AGENT_RELAY = { idFromName: () => 'fixed-account-browser', get: () => ({ fetch: async (request) => {
     const path = new URL(request.url).pathname;
-    if (path === '/status') return Response.json({ configured: true, online: control.online, paymentProtocol: control.protocol, receivingAccountId: control.receivingAccountId });
+    if (path === '/status') return Response.json({ configured: true, online: control.online, paymentProtocol: control.protocol, receivingAccountId: control.receivingAccountId, profile: control.profile });
     if (path === '/notify-order') return Response.json({ ok: true });
     assert.equal(path, '/execute'); const job = await request.json(); control.jobs.push(job);
     if (job.operation === 'create' && control.failure === 'unsent') return Response.json({ ok: false, code: 'AGENT_BUSY', creationAttempted: false });
@@ -738,6 +740,55 @@ test('an authenticated admin can disable checkout Turnstile and restore token en
   assert.equal((await toggle(true)).status, 200);
   assert.equal((await checkoutConfig()).turnstileSiteKey, 'fixture-site');
   assert.equal((await create({ turnstileToken: undefined })).status, 403);
+});
+
+test('owner settings validate safe links and require a description only for custom non-Bonjour pages', () => {
+  assert.deepEqual(validateOwnerSettings({}), { nickname: '', homepageUrl: '', homepageDescription: '' });
+  assert.deepEqual(validateOwnerSettings({ nickname: ' 小鱼 ', homepageUrl: 'https://bonjour.bio/profile' }), { nickname: '小鱼', homepageUrl: 'https://bonjour.bio/profile', homepageDescription: '' });
+  assert.equal(validateOwnerSettings({ homepageUrl: 'https://www.bonjour.bio/profile' }).homepageDescription, '');
+  assert.equal(validateOwnerSettings({ homepageUrl: 'https://github.com/example', homepageDescription: 'GitHub 主页' }).homepageDescription, 'GitHub 主页');
+  assert.equal(validateOwnerSettings({ homepageUrl: 'http://blog.example.invalid', homepageDescription: '博客' }).homepageUrl, 'http://blog.example.invalid/');
+  for (const body of [
+    { homepageUrl: 'javascript:alert(1)' },
+    { homepageUrl: 'data:text/html,example' },
+    { homepageUrl: 'https://owner:password@example.invalid', homepageDescription: '博客' },
+    { homepageUrl: 'https://bonjour.bio.evil.invalid/page' },
+    { homepageUrl: 'https://github.com/example' },
+    { nickname: 'bad\nname' },
+    { nickname: '鱼'.repeat(81) },
+    { homepageUrl: null },
+    { homepageDescription: '鱼'.repeat(81) },
+  ]) assert.throws(() => validateOwnerSettings(body), ApiError);
+});
+
+test('owner settings are Access-protected and public config exposes only the resolved display fields', async (t) => {
+  const { env, request, control, db } = publicAgentSetup(t);
+  Object.assign(env, { ACCESS_TEAM_DOMAIN: 'https://owner-settings-fixture.cloudflareaccess.com', ACCESS_AUD: 'owner-settings', ADMIN_EMAILS: 'owner@example.invalid' });
+  control.profile = { nickname: '账户昵称', avatarUrl: 'https://example.invalid/private-avatar', balance: '13.14', token: 'must-not-leak' };
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const jwk = { ...await exportJWK(publicKey), kid: 'owner-settings-fixture' };
+  control.accessJwks = { keys: [jwk] };
+  const jwt = await new SignJWT({ email: 'owner@example.invalid' }).setProtectedHeader({ alg: 'RS256', kid: jwk.kid }).setSubject('owner').setIssuer(env.ACCESS_TEAM_DOMAIN).setAudience(env.ACCESS_AUD).setIssuedAt().setExpirationTime('5m').sign(privateKey);
+  const headers = { 'Cf-Access-Jwt-Assertion': jwt, Origin: 'https://feedfish.example', 'Content-Type': 'application/json', 'X-Feedfish-Admin': '1' };
+  const save = (body, changes = {}) => request('/api/admin/settings/owner', { method: 'POST', headers: { ...headers, ...changes }, body: JSON.stringify(body) });
+  const config = async () => (await request('/api/config')).json();
+  const defaults = await config();
+  assert.deepEqual(defaults.owner, { nickname: '账户昵称', homepageUrl: 'https://bonjour.bio/b36y9x', homepageDescription: '', usesDefaultHomepage: true });
+  assert.doesNotMatch(JSON.stringify(defaults), /private-avatar|13\.14|must-not-leak|fixed/);
+  assert.equal((await save({ nickname: '冒充' }, { 'Cf-Access-Jwt-Assertion': '' })).status, 403);
+  assert.equal((await save({ nickname: '跨站' }, { Origin: 'https://foreign.invalid' })).status, 403);
+  assert.equal(db.prepare('SELECT count(*) AS count FROM owner_settings').get().count, 0);
+  const custom = { nickname: '主人昵称', homepageUrl: 'https://github.com/example', homepageDescription: 'GitHub 主页' };
+  assert.deepEqual(await (await save(custom)).json(), custom);
+  assert.deepEqual((await config()).owner, { ...custom, usesDefaultHomepage: false });
+  const session = await (await request('/api/admin/session', { headers })).json();
+  assert.deepEqual(session.ownerSettings, custom);
+  assert.deepEqual(await (await request('/api/admin/settings/owner', { headers })).json(), custom);
+  env.PAYMENTS_ENABLED = 'false';
+  assert.equal((await save({})).status, 200);
+  assert.equal((await config()).owner.nickname, '账户昵称');
+  control.profile = null;
+  assert.equal((await config()).owner.nickname, '鲸鲸的主人');
 });
 
 test('public retries reuse an unsent reservation but an uncertain creation cannot be replayed', async (t) => {

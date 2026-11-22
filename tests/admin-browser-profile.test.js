@@ -159,7 +159,7 @@ test('a profile response cannot attach to a replacement device or a cleared reci
   assert.equal((await f.state()).profile, null);
 });
 
-test('admin profile refresh requires Access and same-origin POST; public config exposes no summary', async (t) => {
+test('admin profile refresh requires Access and same-origin POST; public config exposes only the owner nickname', async (t) => {
   const issuer = 'https://browser-profile-fixture.cloudflareaccess.com';
   const { publicKey, privateKey } = await generateKeyPair('RS256');
   const jwk = { ...await exportJWK(publicKey), kid: 'browser-profile-fixture' };
@@ -190,7 +190,8 @@ test('admin profile refresh requires Access and same-origin POST; public config 
   assert.equal(jobs[0].includeProfile, true);
   const config = await (await worker.fetch(new Request('https://feedfish.example/api/config'), env)).json();
   assert.equal(config.paymentsAvailable, true);
-  assert.doesNotMatch(JSON.stringify(config), /小鱼|13\.14|current-recipient|profileUpdatedAt|avatarUrl/);
+  assert.equal(config.owner.nickname, summary.nickname);
+  assert.doesNotMatch(JSON.stringify(config), /13\.14|current-recipient|profileUpdatedAt|avatarUrl/);
   const deniedStatus = await worker.fetch(new Request('https://feedfish.example/api/admin/browser-agent/status'), env);
   assert.equal(deniedStatus.status, 403);
 });

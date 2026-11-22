@@ -42,7 +42,12 @@ const storage = {
     try { value ? sessionStorage.setItem(storageKey, JSON.stringify(value)) : sessionStorage.removeItem(storageKey); } catch {}
   },
 };
-const debugCheckout = debugMode ? createDebugCheckout(storage.get()) : null;
+const debugCheckout = debugMode ? createDebugCheckout(storage.get(), {
+  readOwner: async () => {
+    const response = await fetch('/api/config', { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(8000) });
+    return response.ok ? (await response.json()).owner : undefined;
+  },
+}) : null;
 const fetchCheckout = debugCheckout?.fetch ?? fetch;
 function message(id, text = '') { $(id).textContent = text; $(id).hidden = !text; }
 function busy(value) { $('submit-button').disabled = value || !config || (!config.demo && !config.paymentsAvailable); $('submit-label').textContent = value ? '正在准备付款码…' : '生成付款码'; }
@@ -52,6 +57,21 @@ async function api(path, options = {}) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) { const error = new Error(body.error?.message || '暂时无法连接，请稍后再试。'); error.status = response.status; error.code = body.error?.code; throw error; }
   return body;
+}
+function renderOwner(owner) {
+  const nickname = owner?.nickname || '鲸鲸的主人';
+  const title = `投喂给 ${nickname} 的哦鲸鲸`;
+  $('owner-title').textContent = title;
+  $('owner-title').title = title;
+  let homepage;
+  try { homepage = new URL(owner?.homepageUrl || 'https://bonjour.bio/b36y9x'); } catch { return; }
+  if (!['https:', 'http:'].includes(homepage.protocol) || homepage.username || homepage.password) return;
+  const bonjour = ['bonjour.bio', 'www.bonjour.bio'].includes(homepage.hostname);
+  let label = owner?.homepageDescription || '';
+  if (bonjour) label = owner?.usesDefaultHomepage === false ? `${nickname}的Bonjour主页` : '开发者MirageBIN的Bonjour主页';
+  $('owner-homepage').href = homepage.href;
+  $('owner-homepage-label').textContent = label;
+  $('bonjour-icon').hidden = !bonjour;
 }
 function resetCaptcha() { token = ''; if (turnstileId !== undefined && window.turnstile) window.turnstile.reset(turnstileId); }
 function stopPolling() { clearTimeout(timer); clearInterval(countdown); }
@@ -494,6 +514,7 @@ async function init() {
   $('debug-notice').hidden = !debugCheckout;
   try {
     config = await api('/api/config'); $('demo-notice').hidden = !config.demo;
+    renderOwner(config.owner);
     if (!config.paymentsAvailable) message('config-error', config.paymentsEnabled ? '收款暂时不可用，请稍后重试。' : '收款暂未开放，请晚一点再来。');
     const methods = config.paymentMethods || ['wechat', 'alipay'];
     const choices = [...form.querySelectorAll('input[name="paymentMethod"]')];

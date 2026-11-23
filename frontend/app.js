@@ -4,11 +4,13 @@ import { createDebugCheckout } from './debug-checkout.js';
 
 const $ = (id) => document.getElementById(id);
 const form = $('sponsor-form');
+const optionalFields = form.querySelector('.optional-fields');
 const amountInput = $('amount');
 const amountField = $('amount-field');
 const keypadPanel = $('keypad-panel');
 const keypadToggle = $('keypad-toggle');
 const compactKeypad = matchMedia('(max-width: 899px), (max-height: 640px), (pointer: coarse)');
+const wideLayout = matchMedia('(min-width: 900px)');
 const paymentView = $('payment-view');
 const weChatMethod = form.querySelector('input[name="paymentMethod"][value="wechat"]');
 const debugMode = new URLSearchParams(location.search).get('debug') === '1';
@@ -37,6 +39,8 @@ const expiredQrBackdrop = $('expired-qr-backdrop');
 const unavailableImage = $('payment-unavailable-image');
 const unavailableAnimation = '/assets/payment-peek.webp?v=2';
 const unavailablePoster = '/assets/payment-peek.png';
+optionalFields.open = wideLayout.matches;
+wideLayout.addEventListener('change', (event) => { if (event.matches) optionalFields.open = true; });
 function setKeypadOpen(open) {
   const compact = compactKeypad.matches;
   $('keypad-amount').textContent = amountInput.value || '0';
@@ -468,7 +472,7 @@ $('amount-keypad').addEventListener('click', (event) => {
 $('nickname-skip').addEventListener('click', () => nicknameDialog.close('continue'));
 $('nickname-edit').addEventListener('click', () => {
   nicknameDialog.close('edit');
-  form.querySelector('.optional-fields').open = true;
+  optionalFields.open = true;
   $('nickname').focus();
 });
 function chooseDialog(dialog) {

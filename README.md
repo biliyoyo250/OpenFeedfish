@@ -1,4 +1,5 @@
-[FeedFish](https://github.com/biliyoyo250/OpenFeedfish/blob/public/DesignerPicture/GitHub%E5%AE%A3%E4%BC%A0.png?raw=true)
+<img width="1500" height="500" alt="GitHub宣传" src="https://github.com/user-attachments/assets/9cdd4ec8-5aa6-4b8f-a727-c5b8a68743e9" />
+
 # OpenFeedfish
 
 OpenFeedfish 是一个自托管的 DeepSeek 账户充值页面。访客输入人民币金额，选择微信支付或支付宝，生成付款二维码。付款后，页面显示由后端核对的订单状态。收款账户由部署者在管理后台设置。

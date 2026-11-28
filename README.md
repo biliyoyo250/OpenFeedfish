@@ -14,6 +14,10 @@ Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存�
 
 <img width="1920" height="1032" alt="付款页pc" src="https://github.com/user-attachments/assets/e2c4ba95-d32b-4cee-aaca-e9d73d19532e" />
 
+后台管理页
+
+<img width="1280" height="832" alt="后台管理页_主页" src="https://github.com/user-attachments/assets/538282f5-69ed-43f6-929c-4cbaf9c46489" />
+
 ### 移动端（9:16）
 
 <img width="280" height="467" alt="支付页" src="https://github.com/user-attachments/assets/7a1a70b4-cb1b-49d3-903d-b8aa7790cd76">

@@ -1,4 +1,4 @@
-<img width="1500" height="500" alt="GitHub宣传" src="https://github.com/user-attachments/assets/9cdd4ec8-5aa6-4b8f-a727-c5b8a68743e9" />
+![FeedFish 项目宣传图](DesignerPicture/GitHub宣传.png)
 
 # OpenFeedfish
 
@@ -10,18 +10,19 @@ Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存�
 
 [打开示例站](https://feed.yoyo250.fun/)
 
-### 桌面端（16:9）
+### 桌面端付款页
 
-<img width="1920" height="1032" alt="付款页pc" src="https://github.com/user-attachments/assets/e2c4ba95-d32b-4cee-aaca-e9d73d19532e" />
+![OpenFeedfish 桌面端付款页](DesignerPicture/付款页pc.png)
 
-### 后台管理页
+### 后台管理页设计稿
 
-<img width="1280" height="832" alt="后台管理页_主页" src="https://github.com/user-attachments/assets/538282f5-69ed-43f6-929c-4cbaf9c46489" />
+![OpenFeedfish 后台管理页设计稿](DesignerPicture/后台管理页_主页.png)
 
-### 移动端（9:16）
+### 移动端付款页设计稿
 
-<img width="280" height="467" alt="支付页" src="https://github.com/user-attachments/assets/7a1a70b4-cb1b-49d3-903d-b8aa7790cd76">
+<img src="DesignerPicture/支付页.png" alt="OpenFeedfish 移动端付款页设计稿" width="280">
 
+扫码、支付成功与二维码过期的设计稿见 [DesignerPicture](DesignerPicture)。
 
 ### 选择昵称与付款方式
 

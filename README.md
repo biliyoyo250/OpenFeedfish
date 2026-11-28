@@ -10,7 +10,8 @@ Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存�
 
 ### 桌面端（16:9）
 
-![OpenFeedfish 桌面端付款页](docs/images/OpenFeedfish-16x9.png)
+![OpenFeedfish 桌面端付款页](<img width="1920" height="1032" alt="付款页" src="https://github.com/user-attachments/assets/d6476385-0f0f-4e29-81e9-0d228e0d7668" />
+)
 
 ### 移动端（9:16）
 

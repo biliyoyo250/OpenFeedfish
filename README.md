@@ -16,7 +16,7 @@ Cloudflare Pages 托管网页，Worker 处理订单与定时查单，D1 保存�
 
 ### 移动端（9:16）
 
-<img width="420" height="700" alt="支付页" src="https://github.com/user-attachments/assets/7a1a70b4-cb1b-49d3-903d-b8aa7790cd76" width="240">
+<img width="420" height="700" alt="支付页" src="https://github.com/user-attachments/assets/7a1a70b4-cb1b-49d3-903d-b8aa7790cd76" width="360">
 
 ### 微信内打开付款页
 
